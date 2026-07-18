@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %} – Status{% endblock %}
+
+{% block content %}
+<h1>Status</h1>
+
+<div class="card-grid">
+  <div class="card">
+    <div class="card-label">Slideshow</div>
+    <div class="status-badge {% if slide_status == 'active' %}badge-ok{% else %}badge-err{% endif %}">
+      {{ '● Läuft' if slide_status == 'active' else '○ ' + slide_status }}
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-label">Sync-Timer</div>
+    <div class="status-badge {% if timer_status == 'active' %}badge-ok{% else %}badge-warn{% endif %}">
+      {{ '● Aktiv' if timer_status == 'active' else '○ ' + timer_status }}
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-label">Bilder im Cache</div>
+    <div class="stat-value">{{ n_images }}</div>
+    <div class="stat-sub">{{ size_gb }} GB</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Aktive Quelle</div>
+    <div class="stat-value">{{ (cfg.get('source', 'nextcloud') or 'nextcloud')|upper }}</div>
+  </div>
+</div>
+
+<div class="card mt">
+  <div class="card-label">Letzter Sync</div>
+  <div class="mono">{{ last_sync }}</div>
+</div>
+
+<div class="action-row mt">
+  <button class="btn btn-primary" onclick="syncNow()">🔄 Jetzt syncen</button>
+  <button class="btn btn-secondary" onclick="restartSlideshow()">↺ Slideshow neu starten</button>
+</div>
+
+<div class="card mt">
+  <div class="card-label">Display</div>
+  <div class="btn-row">
+    <button class="btn btn-small" onclick="setDisplay('on')">An</button>
+    <button class="btn btn-small btn-danger" onclick="setDisplay('off')">Aus</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function syncNow() {
+  const r = await fetch('/api/sync_now', {method: 'POST'});
+  const d = await r.json();
+  toast(d.message, d.ok);
+}
+async function restartSlideshow() {
+  const r = await fetch('/api/restart_slideshow', {method: 'POST'});
+  toast('Slideshow wird neu gestartet…');
+}
+async function setDisplay(power) {
+  await fetch('/api/display_power', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({power})
+  });
+  toast('Display ' + (power === 'on' ? 'eingeschaltet' : 'ausgeschaltet'));
+}
+</script>
+{% endblock %}

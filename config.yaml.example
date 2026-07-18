@@ -1,0 +1,62 @@
+# Photoframe Konfiguration
+# Kopieren nach /opt/photoframe/config.yaml und anpassen.
+
+# Aktive Bildquelle: "nextcloud" oder "immich"
+source: nextcloud
+
+# ---------------------------------------------------------------------------
+# Nextcloud / WebDAV
+# ---------------------------------------------------------------------------
+nextcloud:
+  # WebDAV-URL: In Nextcloud unter Einstellungen → Dateien → WebDAV-Adresse
+  url: "https://cloud.example.com/remote.php/dav/files/BENUTZERNAME/Fotos/"
+  username: "mein_benutzer"
+  password: "mein_passwort"
+  # Optional: Nur bestimmte Unterordner synchronisieren (leer = alles)
+  # folders:
+  #   - "Urlaub 2024"
+  #   - "Familie"
+  verify_ssl: true   # false bei selbstsigniertem Zertifikat
+
+# ---------------------------------------------------------------------------
+# Immich
+# ---------------------------------------------------------------------------
+immich:
+  url: "http://192.168.1.100:2283"
+  api_key: "DEIN_API_KEY_HIER"
+  # Optional: Nur bestimmte Alben (leer oder weglassen = alle Fotos)
+  # albums:
+  #   - "Bilderrahmen"
+  all_photos: true   # wird automatisch false wenn albums angegeben
+
+# ---------------------------------------------------------------------------
+# Sync
+# ---------------------------------------------------------------------------
+sync:
+  interval_minutes: 60        # Wie oft synchronisiert wird
+  max_cache_size_gb: 5.0      # Maximale Cache-Größe (älteste Bilder werden entfernt)
+  delete_removed: true        # Lokal löschen wenn auf Server nicht mehr vorhanden
+
+# ---------------------------------------------------------------------------
+# Slideshow
+# ---------------------------------------------------------------------------
+slideshow:
+  interval_seconds: 30        # Anzeigedauer pro Bild
+  # Übergänge: none, fade, ken_burns, slide_left, slide_right,
+  #            slide_up, slide_down, wipe_left, zoom_in, dissolve
+  transition: "ken_burns"
+  transition_duration_ms: 1500
+  ken_burns_zoom: 0.08        # Zoom-Stärke (0.04–0.20)
+  shuffle: true               # Zufällige Reihenfolge
+  fit_mode: "contain"         # "contain" (Balken) oder "cover" (zuschneiden)
+  background_color: "#000000"
+  video_enabled: true         # Videos abspielen (MP4, MKV, MOV, AVI …)
+  video_audio: false          # Ton bei Videos (true = mit Ton)
+
+# ---------------------------------------------------------------------------
+# Display / Energiesparen
+# ---------------------------------------------------------------------------
+display:
+  # HDMI-Zeitplan (leer = immer an)
+  on_time:  "08:00"
+  off_time: "23:00"

@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %} – Quellen{% endblock %}
+
+{% block content %}
+<h1>Bildquellen</h1>
+
+<form method="POST">
+  <div class="card">
+    <div class="card-label">Aktive Quelle</div>
+    <div class="radio-group">
+      <label class="radio-option">
+        <input type="radio" name="source" value="nextcloud"
+               {% if cfg.get('source','nextcloud') == 'nextcloud' %}checked{% endif %}>
+        <span>Nextcloud (WebDAV)</span>
+      </label>
+      <label class="radio-option">
+        <input type="radio" name="source" value="immich"
+               {% if cfg.get('source') == 'immich' %}checked{% endif %}>
+        <span>Immich (API)</span>
+      </label>
+    </div>
+  </div>
+
+  <!-- Nextcloud -->
+  <div class="card mt source-panel" id="panel-nextcloud">
+    <h2>Nextcloud / WebDAV</h2>
+
+    <label>Server-URL (WebDAV-Pfad)
+      <input type="url" name="nc_url"
+             value="{{ cfg.get('nextcloud', {}).get('url', '') }}"
+             placeholder="https://cloud.example.com/remote.php/dav/files/USER/Fotos/">
+    </label>
+
+    <label>Benutzername
+      <input type="text" name="nc_user"
+             value="{{ cfg.get('nextcloud', {}).get('username', '') }}">
+    </label>
+
+    <label>Passwort
+      <input type="password" name="nc_pass" placeholder="(unverändert lassen = bleibt bestehen)">
+    </label>
+
+    <label>Unterordner synchronisieren (optional, einer pro Zeile)
+      <textarea name="nc_folders" rows="3"
+                placeholder="Urlaub&#10;Familie&#10;(leer = alles)">{{ (cfg.get('nextcloud', {}).get('folders', []) or []) | join('\n') }}</textarea>
+    </label>
+
+    <label class="checkbox-label">
+      <input type="checkbox" name="nc_verify_ssl"
+             {% if cfg.get('nextcloud', {}).get('verify_ssl', True) %}checked{% endif %}>
+      SSL-Zertifikat prüfen (deaktivieren bei selbstsigniertem Zertifikat)
+    </label>
+
+    <button type="button" class="btn btn-secondary mt-sm"
+            onclick="testConnection('nextcloud')">Verbindung testen</button>
+    <div id="nc-result" class="test-result"></div>
+  </div>
+
+  <!-- Immich -->
+  <div class="card mt source-panel" id="panel-immich">
+    <h2>Immich</h2>
+
+    <label>Server-URL
+      <input type="url" name="im_url"
+             value="{{ cfg.get('immich', {}).get('url', '') }}"
+             placeholder="http://192.168.1.100:2283">
+    </label>
+
+    <label>API-Key
+      <input type="password" name="im_key"
+             placeholder="(unverändert lassen = bleibt bestehen)">
+      <small>In Immich unter: Einstellungen → API-Schlüssel → Neuen Schlüssel erstellen</small>
+    </label>
+
+    <label>Alben synchronisieren (optional, einer pro Zeile)
+      <textarea name="im_albums" rows="3"
+                placeholder="Bilderrahmen&#10;Familie&#10;(leer = alle Fotos)">{{ (cfg.get('immich', {}).get('albums', []) or []) | join('\n') }}</textarea>
+    </label>
+
+    <button type="button" class="btn btn-secondary mt-sm"
+            onclick="testConnection('immich')">Verbindung testen</button>
+    <div id="im-result" class="test-result"></div>
+  </div>
+
+  <div class="action-row mt">
+    <button type="submit" class="btn btn-primary">Speichern</button>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Panels je nach gewählter Quelle hervorheben
+function updatePanels() {
+  const val = document.querySelector('input[name="source"]:checked')?.value;
+  document.querySelectorAll('.source-panel').forEach(p => {
+    p.classList.toggle('panel-active', p.id === 'panel-' + val);
+  });
+}
+document.querySelectorAll('input[name="source"]').forEach(r =>
+  r.addEventListener('change', updatePanels));
+updatePanels();
+
+async function testConnection(type) {
+  const resultEl = document.getElementById(type === 'nextcloud' ? 'nc-result' : 'im-result');
+  resultEl.textContent = 'Teste Verbindung…';
+  resultEl.className   = 'test-result';
+
+  const payload = {type};
+  if (type === 'nextcloud') {
+    payload.url        = document.querySelector('[name="nc_url"]').value;
+    payload.username   = document.querySelector('[name="nc_user"]').value;
+    payload.password   = document.querySelector('[name="nc_pass"]').value;
+    payload.verify_ssl = document.querySelector('[name="nc_verify_ssl"]').checked;
+  } else {
+    payload.url     = document.querySelector('[name="im_url"]').value;
+    payload.api_key = document.querySelector('[name="im_key"]').value;
+  }
+
+  try {
+    const r = await fetch('/api/test_connection', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    resultEl.textContent = (d.ok ? '✓ ' : '✗ ') + d.message;
+    resultEl.className   = 'test-result ' + (d.ok ? 'result-ok' : 'result-err');
+  } catch(e) {
+    resultEl.textContent = '✗ Netzwerkfehler';
+    resultEl.className   = 'test-result result-err';
+  }
+}
+</script>
+{% endblock %}

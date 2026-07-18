@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %} – Display{% endblock %}
+
+{% block content %}
+<h1>Display & Energie</h1>
+
+{% set disp = cfg.get('display', {}) %}
+{% set sync = cfg.get('sync', {}) %}
+
+<form method="POST">
+  <div class="card">
+    <div class="card-label">HDMI-Zeitplan</div>
+    <label class="checkbox-label">
+      <input type="checkbox" name="schedule_enabled" id="schedule-toggle"
+             {% if disp.get('on_time') and disp.get('off_time') %}checked{% endif %}>
+      Display automatisch ein-/ausschalten
+    </label>
+    <div id="schedule-fields" class="schedule-fields">
+      <label>Einschalten um
+        <input type="time" name="on_time" value="{{ disp.get('on_time', '08:00') }}">
+      </label>
+      <label>Ausschalten um
+        <input type="time" name="off_time" value="{{ disp.get('off_time', '23:00') }}">
+      </label>
+    </div>
+  </div>
+
+  <div class="card mt">
+    <div class="card-label">Display sofort steuern</div>
+    <div class="btn-row">
+      <button type="button" class="btn btn-primary" onclick="setDisplay('on')">Einschalten</button>
+      <button type="button" class="btn btn-danger"  onclick="setDisplay('off')">Ausschalten</button>
+    </div>
+  </div>
+
+  <div class="card mt">
+    <div class="card-label">Sync-Einstellungen</div>
+
+    <label>Sync-Intervall (Minuten)
+      <input type="number" name="sync_interval" min="5" max="1440"
+             value="{{ sync.get('interval_minutes', 60) }}">
+    </label>
+
+    <label>Maximale Cache-Größe (GB)
+      <input type="number" name="max_cache" min="1" max="128" step="0.5"
+             value="{{ sync.get('max_cache_size_gb', 5) }}">
+    </label>
+
+    <label class="checkbox-label">
+      <input type="checkbox" name="delete_removed"
+             {% if sync.get('delete_removed', True) %}checked{% endif %}>
+      Lokal gelöschte Bilder entfernen wenn vom Server entfernt
+    </label>
+  </div>
+
+  <div class="card mt">
+    <div class="card-label">Cache-Verwaltung</div>
+    <p class="text-muted">Löscht alle heruntergeladenen Bilder. Der nächste Sync lädt sie neu.</p>
+    <button type="button" class="btn btn-danger" onclick="clearCache()">
+      Cache leeren
+    </button>
+    <div id="cache-result" class="test-result mt-sm"></div>
+  </div>
+
+  <div class="action-row mt">
+    <button type="submit" class="btn btn-primary">Speichern</button>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const toggle = document.getElementById('schedule-toggle');
+const fields = document.getElementById('schedule-fields');
+
+function updateSchedule() {
+  fields.style.display = toggle.checked ? '' : 'none';
+}
+toggle.addEventListener('change', updateSchedule);
+updateSchedule();
+
+async function setDisplay(power) {
+  await fetch('/api/display_power', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({power})
+  });
+  toast('Display ' + (power === 'on' ? 'eingeschaltet' : 'ausgeschaltet'));
+}
+
+async function clearCache() {
+  if (!confirm('Wirklich alle Bilder aus dem Cache löschen?')) return;
+  const r = await fetch('/api/clear_cache', {method: 'POST'});
+  const d = await r.json();
+  const el = document.getElementById('cache-result');
+  el.textContent = d.message;
+  el.className   = 'test-result ' + (d.ok ? 'result-ok' : 'result-err');
+}
+</script>
+{% endblock %}

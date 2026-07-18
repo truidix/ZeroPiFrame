@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Photoframe{% block title %}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <span class="logo">📷 Photoframe</span>
+      <nav>
+        <a href="/"         class="{% if request.path == '/' %}active{% endif %}">Status</a>
+        <a href="/sources"  class="{% if request.path == '/sources' %}active{% endif %}">Quellen</a>
+        <a href="/slideshow" class="{% if request.path == '/slideshow' %}active{% endif %}">Slideshow</a>
+        <a href="/display"  class="{% if request.path == '/display' %}active{% endif %}">Display</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <script>
+    // Toast-Benachrichtigungen
+    function toast(msg, ok = true) {
+      const t = document.createElement('div');
+      t.className = 'toast ' + (ok ? 'toast-ok' : 'toast-err');
+      t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(() => t.classList.add('show'), 10);
+      setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 400); }, 3000);
+    }
+
+    // "Gespeichert"-Banner
+    if (new URLSearchParams(location.search).get('saved')) {
+      toast('Einstellungen gespeichert ✓');
+      history.replaceState(null, '', location.pathname);
+    }
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

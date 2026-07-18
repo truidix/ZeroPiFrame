@@ -1,0 +1,20 @@
+# Live config (contains credentials) — only config.yaml.example is tracked
+config.yaml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Editors / OS cruft
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
+*.log
+
+# Local cache (created on the Pi at runtime, not part of the repo)
+cache/

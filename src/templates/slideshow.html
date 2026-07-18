@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %} – Slideshow{% endblock %}
+
+{% block content %}
+<h1>Slideshow</h1>
+
+{% set sl = cfg.get('slideshow', {}) %}
+
+<form method="POST">
+  <div class="card">
+    <label>Anzeigedauer pro Bild (Sekunden)
+      <input type="number" name="interval" min="5" max="3600"
+             value="{{ sl.get('interval_seconds', 30) }}">
+    </label>
+  </div>
+
+  <div class="card mt">
+    <div class="card-label">Übergang</div>
+    <div class="transition-grid">
+      {% set transitions = [
+        ('none',        'Kein',        'Sofortiger Schnitt',                   '⚡'),
+        ('fade',        'Fade',        'Sanfte Überblendung',                  '🌫️'),
+        ('ken_burns',   'Ken Burns',   'Langsamer Pan + Zoom (empfohlen)',      '🎬'),
+        ('slide_left',  'Slide Links', 'Neues Bild schiebt von rechts herein', '◀'),
+        ('slide_right', 'Slide Rechts','Neues Bild schiebt von links herein',  '▶'),
+        ('slide_up',    'Slide Oben',  'Neues Bild schiebt von unten herein',  '▲'),
+        ('slide_down',  'Slide Unten', 'Neues Bild schiebt von oben herein',   '▼'),
+        ('wipe_left',   'Wipe',        'Neues Bild wird von links enthüllt',   '▷'),
+        ('zoom_in',     'Zoom',        'Altes Bild zoomt heraus',              '🔍'),
+        ('dissolve',    'Dissolve',    'Block-Auflösung in Zufallsreihenfolge','✦'),
+      ] %}
+      {% for val, label, desc, icon in transitions %}
+      <label class="transition-option {% if sl.get('transition','ken_burns') == val %}selected{% endif %}">
+        <input type="radio" name="transition" value="{{ val }}"
+               {% if sl.get('transition','ken_burns') == val %}checked{% endif %}>
+        <span class="t-icon">{{ icon }}</span>
+        <span class="t-label">{{ label }}</span>
+        <span class="t-desc">{{ desc }}</span>
+      </label>
+      {% endfor %}
+    </div>
+
+    <div class="mt-sm" id="duration-row">
+      <label>Übergangsdauer (ms)
+        <input type="number" name="t_duration" min="200" max="5000" step="100"
+               value="{{ sl.get('transition_duration_ms', 1500) }}">
+      </label>
+    </div>
+
+    <div id="kb-row">
+      <label>Ken Burns Zoom-Stärke
+        <input type="range" name="kb_zoom" min="0.02" max="0.20" step="0.01"
+               value="{{ sl.get('ken_burns_zoom', 0.08) }}"
+               oninput="document.getElementById('kb-zoom-val').textContent = (+this.value * 100).toFixed(0) + '%'">
+        <span id="kb-zoom-val">{{ (sl.get('ken_burns_zoom', 0.08) * 100)|int }}%</span>
+      </label>
+    </div>
+  </div>
+
+  <div class="card mt">
+    <div class="card-label">Reihenfolge</div>
+    <label class="radio-option">
+      <input type="radio" name="order" value="shuffle"
+             {% if sl.get('shuffle', True) %}checked{% endif %}>
+      <span>Zufällig mischen</span>
+    </label>
+    <label class="radio-option">
+      <input type="radio" name="order" value="alpha"
+             {% if not sl.get('shuffle', True) %}checked{% endif %}>
+      <span>Alphabetisch</span>
+    </label>
+  </div>
+
+  <div class="card mt">
+    <div class="card-label">Bildanpassung</div>
+    <label class="radio-option">
+      <input type="radio" name="fit_mode" value="contain"
+             {% if sl.get('fit_mode','contain') == 'contain' %}checked{% endif %}>
+      <span>Contain – vollständiges Bild mit Balken</span>
+    </label>
+    <label class="radio-option">
+      <input type="radio" name="fit_mode" value="cover"
+             {% if sl.get('fit_mode') == 'cover' %}checked{% endif %}>
+      <span>Cover – Bild füllt Bildschirm (ggf. zugeschnitten)</span>
+    </label>
+  </div>
+
+  <div class="card mt">
+    <label>Hintergrundfarbe
+      <input type="color" name="bg_color"
+             value="{{ sl.get('background_color', '#000000') }}">
+    </label>
+  </div>
+
+  <div class="card mt">
+    <div class="card-label">Video</div>
+    <label class="checkbox-label">
+      <input type="checkbox" name="video_enabled" id="video-enabled-toggle"
+             {% if sl.get('video_enabled', True) %}checked{% endif %}>
+      Videos abspielen (MP4, MKV, MOV …)
+    </label>
+    <div id="audio-row">
+      <label class="checkbox-label" style="margin-top:0.5rem">
+        <input type="checkbox" name="video_audio"
+               {% if sl.get('video_audio', False) %}checked{% endif %}>
+        Ton abspielen
+      </label>
+      <small>Ohne Ton eignet sich der Bilderrahmen besser als Hintergrunddekoration.</small>
+    </div>
+  </div>
+
+  <div class="action-row mt">
+    <button type="submit" class="btn btn-primary">Speichern & anwenden</button>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function updateTransitionUI() {
+  const val        = document.querySelector('input[name="transition"]:checked')?.value;
+  const isKenBurns = val === 'ken_burns';
+  const isNone     = val === 'none';
+
+  document.getElementById('kb-row').style.display      = isKenBurns ? '' : 'none';
+  document.getElementById('duration-row').style.display = isNone || isKenBurns ? 'none' : '';
+
+  document.querySelectorAll('.transition-option').forEach(el => {
+    el.classList.toggle('selected', el.querySelector('input').value === val);
+  });
+}
+
+document.querySelectorAll('input[name="transition"]').forEach(r =>
+  r.addEventListener('change', updateTransitionUI));
+updateTransitionUI();
+
+// Audio-Zeile nur anzeigen wenn Video aktiv
+const videoToggle = document.getElementById('video-enabled-toggle');
+function updateAudioRow() {
+  document.getElementById('audio-row').style.opacity = videoToggle.checked ? '1' : '0.35';
+  document.getElementById('audio-row').style.pointerEvents = videoToggle.checked ? '' : 'none';
+}
+videoToggle.addEventListener('change', updateAudioRow);
+updateAudioRow();
+</script>
+{% endblock %}
