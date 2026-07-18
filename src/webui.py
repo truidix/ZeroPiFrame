@@ -329,4 +329,8 @@ ExecStart=/usr/bin/vcgencmd {cmd}
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    # threaded=True: ohne das blockiert z. B. ein langsamer "Verbindung
+    # testen"-Aufruf (bis zu 30s Timeout) die komplette Web-UI für alle
+    # anderen Anfragen (nur ein CPU-Kern des Zero 2 W wird dafür gebraucht,
+    # das Blockieren war rein durch den Single-Request-Dev-Server bedingt).
+    app.run(host='0.0.0.0', port=8080, debug=False, threaded=True)

@@ -68,8 +68,19 @@ def extract_host_port(url: str) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 
 def cache_size_gb() -> float:
-    total = sum(f.stat().st_size for f in CACHE_DIR.iterdir() if f.is_file())
+    # .part-Dateien (unvollständige Downloads, s. _download_atomic) zählen
+    # nicht zum Cache, damit ein abgebrochener Download nicht dauerhaft
+    # gegen das Cache-Limit zählt.
+    total = sum(f.stat().st_size for f in CACHE_DIR.iterdir()
+                if f.is_file() and not f.name.endswith('.part'))
     return total / (1024 ** 3)
+
+
+def cleanup_orphaned_downloads():
+    """Entfernt .part-Reste eines vorherigen, abgebrochenen Sync-Laufs."""
+    for f in CACHE_DIR.glob('*.part'):
+        log.info(f'Verwaiste .part-Datei entfernt: {f.name}')
+        f.unlink(missing_ok=True)
 
 
 def cached_files() -> dict[str, Path]:
@@ -80,14 +91,40 @@ def cached_files() -> dict[str, Path]:
 
 def enforce_cache_limit(max_gb: float):
     """Löscht älteste Bilder wenn Cache-Limit überschritten."""
-    if cache_size_gb() <= max_gb:
+    total = cache_size_gb() * (1024 ** 3)
+    limit = max_gb * (1024 ** 3)
+    if total <= limit:
         return
-    files = sorted(CACHE_DIR.iterdir(), key=lambda f: f.stat().st_mtime)
+    target = limit * 0.9
+    files  = sorted(CACHE_DIR.iterdir(), key=lambda f: f.stat().st_mtime)
     for f in files:
-        if cache_size_gb() <= max_gb * 0.9:
+        if total <= target:
             break
+        try:
+            size = f.stat().st_size
+        except OSError:
+            continue
         log.info(f'Cache-Limit: lösche {f.name}')
         f.unlink(missing_ok=True)
+        total -= size
+
+
+def _download_atomic(resp, dest: Path) -> int:
+    """Streamt eine Response in eine temporäre Datei und benennt sie erst nach
+    vollständigem Download atomar in den Zielnamen um.
+
+    Verhindert, dass die Slideshow (die den Cache-Ordner unabhängig davon
+    periodisch neu einliest) eine noch unvollständig heruntergeladene Datei
+    zu Gesicht bekommt und ein kaputtes/verzerrtes Bild anzeigt.
+    """
+    tmp = dest.with_name(dest.name + '.part')
+    size = 0
+    with open(tmp, 'wb') as fh:
+        for chunk in resp.iter_content(65536):
+            fh.write(chunk)
+            size += len(chunk)
+    os.replace(tmp, dest)   # atomarer Rename auf demselben Dateisystem
+    return size
 
 # ---------------------------------------------------------------------------
 # Nextcloud / WebDAV Sync
@@ -175,6 +212,12 @@ class NextcloudSync:
         else:
             remote_files = self.collect_files()
 
+        # Laufende Cache-Größe einmalig ermitteln statt bei jeder Datei den
+        # kompletten Cache-Ordner neu zu scannen (O(n) statt O(n²) bei
+        # großen Bibliotheken – spart auf der langsamen SD-Karte spürbar CPU/IO).
+        total_bytes = cache_size_gb() * (1024 ** 3)
+        limit_bytes = max_gb * (1024 ** 3)
+
         remote_names = set()
         for rf in remote_files:
             # Dateinamen ggf. anpassen um Kollisionen zu vermeiden
@@ -191,26 +234,27 @@ class NextcloudSync:
                     skipped += 1
                     continue
 
-            if cache_size_gb() >= max_gb:
+            if total_bytes >= limit_bytes:
                 log.warning(f'Cache-Limit erreicht, überspringe {safe_name}')
                 continue
 
-            # Download
+            # Download (atomar über .part-Datei + Rename, s. _download_atomic)
             try:
                 dl_url = self.url + '/' + rf['name'] if '/' not in rf['href'] \
                          else rf['href'] if rf['href'].startswith('http') \
                          else f"https://{self.url.split('//')[1].split('/')[0]}{rf['href']}"
                 resp = self.session.get(dl_url, timeout=60, stream=True)
                 resp.raise_for_status()
-                with open(local_path, 'wb') as fh:
-                    for chunk in resp.iter_content(65536):
-                        fh.write(chunk)
+                old_size = local_path.stat().st_size if local_path.exists() else 0
+                new_size = _download_atomic(resp, local_path)
+                total_bytes += new_size - old_size
                 if rf['etag']:
                     etag_file.write_text(rf['etag'])
                 log.info(f'Heruntergeladen: {safe_name}')
                 added += 1
             except Exception as e:
                 log.error(f'Download-Fehler {safe_name}: {e}')
+                local_path.with_name(local_path.name + '.part').unlink(missing_ok=True)
 
         if delete_removed:
             for name, path in list(existing.items()):
@@ -285,6 +329,9 @@ class ImmichSync:
             log.error(f'Immich API Fehler: {e}')
             return 0, 0, 0
 
+        total_bytes = cache_size_gb() * (1024 ** 3)
+        limit_bytes = max_gb * (1024 ** 3)
+
         remote_ids = set()
         for asset in assets:
             asset_id   = asset['id']
@@ -301,7 +348,7 @@ class ImmichSync:
                 skipped += 1
                 continue
 
-            if cache_size_gb() >= max_gb:
+            if total_bytes >= limit_bytes:
                 log.warning(f'Cache-Limit erreicht, überspringe {safe_name}')
                 continue
 
@@ -313,13 +360,13 @@ class ImmichSync:
                     stream=True
                 )
                 resp.raise_for_status()
-                with open(local_path, 'wb') as fh:
-                    for chunk in resp.iter_content(65536):
-                        fh.write(chunk)
+                new_size = _download_atomic(resp, local_path)
+                total_bytes += new_size
                 log.info(f'Heruntergeladen: {orig_name} → {safe_name}')
                 added += 1
             except Exception as e:
                 log.error(f'Download-Fehler {safe_name}: {e}')
+                local_path.with_name(local_path.name + '.part').unlink(missing_ok=True)
                 local_path.unlink(missing_ok=True)
 
         if delete_removed:
@@ -406,6 +453,7 @@ def main():
         sys.exit(0)
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cleanup_orphaned_downloads()
     existing = cached_files()
     log.info(f'Cache: {len(existing)} Dateien / {cache_size_gb():.2f} GB')
     log.info(f'Quelle: {source.upper()} @ {url}')

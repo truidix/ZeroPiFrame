@@ -36,7 +36,7 @@ BOOT_DIR="/boot/firmware"
 info "Boot-Verzeichnis: $BOOT_DIR"
 
 # ---------------------------------------------------------------------------
-info "1/7 System-Pakete installieren"
+info "1/9 System-Pakete installieren"
 # ---------------------------------------------------------------------------
 apt-get update -qq
 apt-get install -y \
@@ -45,11 +45,12 @@ apt-get install -y \
     python3-yaml \
     libraspberrypi-bin \
     mpv \
+    iw \
     git curl avahi-daemon \
     --no-install-recommends
 
 # ---------------------------------------------------------------------------
-info "2/7 Dateien installieren"
+info "2/9 Dateien installieren"
 # ---------------------------------------------------------------------------
 mkdir -p "$INSTALL_DIR/templates" "$INSTALL_DIR/static" "$CACHE_DIR"
 
@@ -64,7 +65,7 @@ touch "$INSTALL_DIR/static/placeholder.png"
 chmod -R 755 "$INSTALL_DIR"
 
 # ---------------------------------------------------------------------------
-info "3/7 Python virtualenv einrichten (Trixie / PEP 668)"
+info "3/9 Python virtualenv einrichten (Trixie / PEP 668)"
 # ---------------------------------------------------------------------------
 # pygame und PyYAML kommen als System-Paket (apt), Rest via pip in venv.
 # --system-site-packages macht System-Pakete (pygame) im venv sichtbar.
@@ -80,7 +81,7 @@ python3 -m venv --system-site-packages "$VENV_DIR"
 info "virtualenv: $VENV_DIR"
 
 # ---------------------------------------------------------------------------
-info "4/7 Konfiguration anlegen"
+info "4/9 Konfiguration anlegen"
 # ---------------------------------------------------------------------------
 if [[ ! -f "$INSTALL_DIR/config.yaml" ]]; then
     cp "$(dirname "$0")/config.yaml.example" "$INSTALL_DIR/config.yaml"
@@ -91,7 +92,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-info "5/7 Benutzer-Berechtigungen setzen"
+info "5/9 Benutzer-Berechtigungen setzen"
 # ---------------------------------------------------------------------------
 usermod -aG video,render "$FRAME_USER" 2>/dev/null || true
 
@@ -102,7 +103,7 @@ touch "$LOG_DIR/photoframe-sync.log"
 chown "$FRAME_USER:$FRAME_USER" "$LOG_DIR/photoframe-sync.log"
 
 # ---------------------------------------------------------------------------
-info "6/7 Konsole / Framebuffer konfigurieren"
+info "6/9 Konsole / Framebuffer konfigurieren"
 # ---------------------------------------------------------------------------
 systemctl disable getty@tty1 2>/dev/null || true
 
@@ -113,13 +114,62 @@ if [[ -f "$CMDLINE" ]] && ! grep -q "vt.global_cursor_default=0" "$CMDLINE"; the
 fi
 
 CONFIG="$BOOT_DIR/config.txt"
-if [[ -f "$CONFIG" ]] && ! grep -q "dtoverlay=vc4-kms-v3d" "$CONFIG"; then
-    warn "vc4-kms-v3d nicht in $CONFIG gefunden"
+if [[ -f "$CONFIG" ]]; then
+    cp "$CONFIG" "$CONFIG.photoframe.bak"
+
+    if ! grep -q "^dtoverlay=vc4-kms-v3d" "$CONFIG"; then
+        echo "dtoverlay=vc4-kms-v3d" >> "$CONFIG"
+        info "vc4-kms-v3d (voller KMS-Treiber) zu $CONFIG hinzugefügt – ohne diesen bleibt der Screen schwarz"
+    fi
+    # Bildschirm ist dauerhaft angeschlossen: HDMI immer als angeschlossen
+    # behandeln (sonst manchmal kein Bild nach Kaltstart) und keine
+    # Overscan-Ränder/Boot-Regenbogen auf einem dedizierten Kiosk-Display.
+    grep -q "^hdmi_force_hotplug=1" "$CONFIG" || echo "hdmi_force_hotplug=1" >> "$CONFIG"
+    grep -q "^disable_overscan=1"  "$CONFIG" || echo "disable_overscan=1"  >> "$CONFIG"
+    grep -q "^disable_splash=1"    "$CONFIG" || echo "disable_splash=1"    >> "$CONFIG"
+    info "config.txt angepasst (Backup: $CONFIG.photoframe.bak)"
+else
+    warn "$CONFIG nicht gefunden – vc4-kms-v3d manuell prüfen"
     warn "Falls kein Bild erscheint: SDL_VIDEODRIVER=fbcon in den Service-Dateien setzen"
 fi
 
 # ---------------------------------------------------------------------------
-info "7/7 systemd-Dienste einrichten"
+info "7/9 Swap & WLAN-Energiesparmodus (512 MB RAM sind knapp)"
+# ---------------------------------------------------------------------------
+# Pillow-Decode großer Fotos + pygame + Flask + gelegentlich mpv nebeneinander
+# können sich auf einem Zero 2 W mit 512 MB RAM eng werden. Etwas Swap als
+# Sicherheitsnetz gegen OOM-Kills ist günstiger als ein abstürzender Dienst.
+if [[ -f /etc/dphys-swapfile ]]; then
+    sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=512/' /etc/dphys-swapfile
+    grep -q "^CONF_SWAPSIZE=" /etc/dphys-swapfile || echo "CONF_SWAPSIZE=512" >> /etc/dphys-swapfile
+    dphys-swapfile setup  >/dev/null 2>&1 || true
+    systemctl restart dphys-swapfile 2>/dev/null || true
+    info "Swap auf 512 MB gesetzt"
+else
+    warn "dphys-swapfile nicht gefunden – Swap manuell einrichten falls RAM knapp wird"
+fi
+
+# Der Zero 2 W hat kein Ethernet – WLAN-Powersave sorgt sonst für spürbare
+# Verzögerungen/Aussetzer beim Sync und in der Web-UI.
+cat > /etc/systemd/system/photoframe-wifi-powersave-off.service << 'EOF'
+[Unit]
+Description=Photoframe: WLAN-Energiesparmodus deaktivieren
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/iw dev wlan0 set power_save off
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now photoframe-wifi-powersave-off 2>/dev/null || \
+    warn "WLAN-Powersave konnte nicht deaktiviert werden (kein wlan0? per USB-LAN o.ä.?)"
+
+# ---------------------------------------------------------------------------
+info "8/9 systemd-Dienste einrichten"
 # ---------------------------------------------------------------------------
 PYTHON="$VENV_DIR/bin/python3"
 
@@ -139,6 +189,11 @@ ExecStartPre=/bin/sleep 3
 ExecStart=$PYTHON $INSTALL_DIR/slideshow.py
 Restart=always
 RestartSec=5
+# Höhere Priorität als Sync/Web-UI: die Slideshow soll auch dann flüssig
+# weiterlaufen, wenn der stündliche Sync im Hintergrund CPU/SD-Karte nutzt.
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
 
 [Install]
 WantedBy=multi-user.target
@@ -157,6 +212,9 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$PYTHON $INSTALL_DIR/sync.py
 StandardOutput=append:$LOG_DIR/photoframe-sync.log
 StandardError=append:$LOG_DIR/photoframe-sync.log
+# Niedrigere Priorität: Downloads sollen die Slideshow nicht ausbremsen.
+Nice=10
+IOSchedulingClass=idle
 EOF
 
 cat > /etc/systemd/system/photoframe-sync.timer << 'EOF'
@@ -183,11 +241,15 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$PYTHON $INSTALL_DIR/webui.py
 Restart=always
 RestartSec=5
+Nice=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+# ---------------------------------------------------------------------------
+info "9/9 Dienste aktivieren"
+# ---------------------------------------------------------------------------
 systemctl daemon-reload
 systemctl enable photoframe-slideshow photoframe-sync.timer photoframe-webui
 systemctl start  photoframe-sync.timer photoframe-webui

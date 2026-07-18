@@ -14,6 +14,7 @@ import signal
 import logging
 import subprocess
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 import yaml
 from PIL import Image, ImageOps, ImageFilter
@@ -99,8 +100,23 @@ def pil_to_surface(pil_img: Image.Image) -> pygame.Surface:
 
 
 def load_and_fit(path: Path, w: int, h: int, fit_mode: str, bg: tuple) -> Image.Image:
-    """Lädt Bild, korrigiert EXIF-Rotation und passt es an den Bildschirm an."""
+    """Lädt Bild, korrigiert EXIF-Rotation und passt es an den Bildschirm an.
+
+    Nutzt PIL's draft()-Modus: JPEGs werden vom Decoder direkt in einer
+    reduzierten Auflösung dekodiert (libjpeg DCT-Scaling), statt komplett in
+    voller Auflösung geladen und danach herunterskaliert zu werden. Bei
+    modernen Handyfotos (12–48 MP) spart das auf einem Pi Zero 2 W erhebliche
+    CPU-Zeit und vermeidet ein sichtbares Stocken beim Bildwechsel.
+    """
     img = Image.open(path)
+    # draft() ist nur für JPEG wirksam (no-op für PNG/GIF/WebP/BMP) und muss
+    # vor jeder anderen Operation aufgerufen werden. Ziel etwas großzügiger
+    # als der Screen wählen (Faktor 1.3), damit Ken-Burns-Pan/Zoom und
+    # "cover"-Crops noch genug Bildmaterial haben.
+    try:
+        img.draft('RGB', (int(w * 1.3), int(h * 1.3)))
+    except Exception:
+        pass
     img = ImageOps.exif_transpose(img)
     img = img.convert('RGB')
 
@@ -406,6 +422,18 @@ def get_media_list(video_enabled: bool) -> list:
     return files
 
 
+# Ein einzelner Hintergrund-Worker reicht: er dekodiert währenddessen das
+# nächste Bild vor, sodass load_and_fit() (Decode + LANCZOS-Resize eines
+# potenziell hochauflösenden Fotos) beim eigentlichen Bildwechsel nicht mehr
+# blockiert. Auf dem Pi Zero 2 W ist das der Unterschied zwischen einem
+# spürbaren Ruckler bei jedem Bildwechsel und einem nahtlosen Übergang.
+_prefetch_executor = ThreadPoolExecutor(max_workers=1)
+
+
+def _submit_prefetch(path: Path, w: int, h: int, fit: str, bg: tuple):
+    return _prefetch_executor.submit(load_and_fit, path, w, h, fit, bg)
+
+
 def run():
     global _config, _reload_flag
 
@@ -429,6 +457,9 @@ def run():
     current_surf.fill((0, 0, 0))
     screen.blit(current_surf, (0, 0))
     pygame.display.flip()
+
+    # {'future': Future|None, 'key': (path, w, h, fit, bg)|None}
+    prefetch = {'future': None, 'key': None}
 
     while True:
         if _reload_flag:
@@ -461,7 +492,7 @@ def run():
         else:
             images.sort(key=lambda p: p.name)
 
-        for media_path in images:
+        for idx, media_path in enumerate(images):
             # Config-Reload zwischen Dateien berücksichtigen
             if _reload_flag:
                 _config = load_config()
@@ -495,11 +526,32 @@ def run():
                 continue
 
             # --- Bild ---
-            try:
-                img_pil = load_and_fit(media_path, W, H, fit, bg)
-            except Exception as e:
-                log.warning(f'Bild nicht ladbar {media_path.name}: {e}')
-                continue
+            # Wurde dieses Bild bereits im Hintergrund vorgeladen (während das
+            # vorherige Bild angezeigt wurde)? Dann steht es hier quasi ohne
+            # Wartezeit zur Verfügung. Andernfalls (erstes Bild, Config hat
+            # sich geändert, Video davor) synchron laden wie bisher.
+            key = (media_path, W, H, fit, bg)
+            if prefetch['key'] == key and prefetch['future'] is not None:
+                try:
+                    img_pil = prefetch['future'].result()
+                except Exception as e:
+                    log.warning(f'Bild nicht ladbar {media_path.name}: {e}')
+                    prefetch['future'] = prefetch['key'] = None
+                    continue
+            else:
+                try:
+                    img_pil = load_and_fit(media_path, W, H, fit, bg)
+                except Exception as e:
+                    log.warning(f'Bild nicht ladbar {media_path.name}: {e}')
+                    continue
+            prefetch['future'] = prefetch['key'] = None
+
+            # Nächstes Bild direkt jetzt im Hintergrund vordekodieren – es hat
+            # bis zum nächsten Bildwechsel (Ken-Burns-/Intervall-Dauer) Zeit.
+            next_path = images[idx + 1] if idx + 1 < len(images) else None
+            if next_path is not None and next_path.suffix.lower() in SUPPORTED_IMAGES:
+                prefetch['key']    = (next_path, W, H, fit, bg)
+                prefetch['future'] = _submit_prefetch(next_path, W, H, fit, bg)
 
             log.info(f'Zeige: {media_path.name}  [{t_name}]')
 
