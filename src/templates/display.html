@@ -1,68 +1,64 @@
 {% extends "base.html" %}
-{% block title %} – Display{% endblock %}
+{% block title %} – {{ t('nav.display') }}{% endblock %}
 
 {% block content %}
-<h1>Display & Energie</h1>
+<h1>{{ t('display_page.heading') }}</h1>
 
 {% set disp = cfg.get('display', {}) %}
 {% set sync = cfg.get('sync', {}) %}
 
 <form method="POST">
   <div class="card">
-    <div class="card-label">HDMI-Zeitplan</div>
+    <div class="card-label">{{ t('display_page.hdmi_schedule_heading') }}</div>
     <label class="checkbox-label">
       <input type="checkbox" name="schedule_enabled" id="schedule-toggle"
              {% if disp.get('on_time') and disp.get('off_time') %}checked{% endif %}>
-      Display automatisch ein-/ausschalten
+      {{ t('display_page.auto_toggle_label') }}
     </label>
     <div id="schedule-fields" class="schedule-fields">
-      <label>Einschalten um
+      <label>{{ t('display_page.on_time_label') }}
         <input type="time" name="on_time" value="{{ disp.get('on_time', '08:00') }}">
       </label>
-      <label>Ausschalten um
+      <label>{{ t('display_page.off_time_label') }}
         <input type="time" name="off_time" value="{{ disp.get('off_time', '23:00') }}">
       </label>
     </div>
   </div>
 
   <div class="card mt">
-    <div class="card-label">Automatisches Herunterfahren</div>
+    <div class="card-label">{{ t('display_page.auto_shutdown_heading') }}</div>
     <p class="text-muted">
-      Für Betrieb an einer Zeitschaltuhr / Smart-Plug: der Pi fährt sich
-      selbst sauber herunter, statt dass der Strom roh gekappt wird
-      (schont die SD-Karte). Stelle die Zeit mindestens 2–3 Minuten vor
-      der Abschaltzeit deiner Steckdose ein. Beim nächsten Einschalten der
-      Steckdose startet der Pi automatisch neu.
+      {{ t('display_page.auto_shutdown_desc') }}
     </p>
     <label class="checkbox-label">
       <input type="checkbox" name="shutdown_enabled" id="shutdown-toggle"
              {% if disp.get('shutdown_time') %}checked{% endif %}>
-      Automatisches Herunterfahren aktivieren
+      {{ t('display_page.auto_shutdown_enable_label') }}
     </label>
     <div id="shutdown-fields">
-      <label>Herunterfahren um
+      <label>{{ t('display_page.shutdown_time_label') }}
         <input type="time" name="shutdown_time" value="{{ disp.get('shutdown_time', '22:55') }}">
       </label>
     </div>
   </div>
 
   <div class="card mt">
-    <div class="card-label">Display sofort steuern</div>
+    <div class="card-label">{{ t('display_page.control_now_heading') }}</div>
     <div class="btn-row">
-      <button type="button" class="btn btn-primary" onclick="setDisplay('on')">Einschalten</button>
-      <button type="button" class="btn btn-danger"  onclick="setDisplay('off')">Ausschalten</button>
+      <button type="button" class="btn btn-primary" onclick="setDisplay('on')">{{ t('display_page.turn_on_btn') }}</button>
+      <button type="button" class="btn btn-danger"  onclick="setDisplay('off')">{{ t('display_page.turn_off_btn') }}</button>
     </div>
   </div>
 
   <div class="card mt">
-    <div class="card-label">Sync-Einstellungen</div>
+    <div class="card-label">{{ t('display_page.sync_settings_heading') }}</div>
 
-    <label>Sync-Intervall (Minuten)
+    <label>{{ t('display_page.sync_interval_label') }}
       <input type="number" name="sync_interval" min="5" max="1440"
              value="{{ sync.get('interval_minutes', 60) }}">
     </label>
 
-    <label>Maximale Cache-Größe (GB)
+    <label>{{ t('display_page.max_cache_label') }}
       <input type="number" name="max_cache" min="1" max="128" step="0.5"
              value="{{ sync.get('max_cache_size_gb', 5) }}">
     </label>
@@ -70,27 +66,33 @@
     <label class="checkbox-label">
       <input type="checkbox" name="delete_removed"
              {% if sync.get('delete_removed', True) %}checked{% endif %}>
-      Lokal gelöschte Bilder entfernen wenn vom Server entfernt
+      {{ t('display_page.delete_removed_label') }}
     </label>
   </div>
 
   <div class="card mt">
-    <div class="card-label">Cache-Verwaltung</div>
-    <p class="text-muted">Löscht alle heruntergeladenen Bilder. Der nächste Sync lädt sie neu.</p>
+    <div class="card-label">{{ t('display_page.cache_mgmt_heading') }}</div>
+    <p class="text-muted">{{ t('display_page.clear_cache_desc') }}</p>
     <button type="button" class="btn btn-danger" onclick="clearCache()">
-      Cache leeren
+      {{ t('display_page.clear_cache_btn') }}
     </button>
     <div id="cache-result" class="test-result mt-sm"></div>
   </div>
 
   <div class="action-row mt">
-    <button type="submit" class="btn btn-primary">Speichern</button>
+    <button type="submit" class="btn btn-primary">{{ t('common.save_btn') }}</button>
   </div>
 </form>
 {% endblock %}
 
 {% block scripts %}
 <script>
+const T = {
+  displayTurnedOn:      {{ t('common.display_turned_on')|tojson }},
+  displayTurnedOff:     {{ t('common.display_turned_off')|tojson }},
+  clearCacheConfirm:    {{ t('display_page.clear_cache_confirm')|tojson }},
+};
+
 const toggle = document.getElementById('schedule-toggle');
 const fields = document.getElementById('schedule-fields');
 
@@ -115,11 +117,11 @@ async function setDisplay(power) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({power})
   });
-  toast('Display ' + (power === 'on' ? 'eingeschaltet' : 'ausgeschaltet'));
+  toast(power === 'on' ? T.displayTurnedOn : T.displayTurnedOff);
 }
 
 async function clearCache() {
-  if (!confirm('Wirklich alle Bilder aus dem Cache löschen?')) return;
+  if (!confirm(T.clearCacheConfirm)) return;
   const r = await fetch('/api/clear_cache', {method: 'POST'});
   const d = await r.json();
   const el = document.getElementById('cache-result');

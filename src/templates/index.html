@@ -1,133 +1,151 @@
 {% extends "base.html" %}
-{% block title %} – Status{% endblock %}
+{% block title %} – {{ t('nav.status') }}{% endblock %}
 
 {% block content %}
-<h1>Status</h1>
+<h1>{{ t('nav.status') }}</h1>
 
 <div class="card-grid">
   <div class="card">
-    <div class="card-label">Slideshow</div>
+    <div class="card-label">{{ t('index.card_slideshow') }}</div>
     <div id="slideshow-status-badge"
          class="status-badge {% if slide_status == 'active' %}badge-ok{% else %}badge-err{% endif %}">
-      {{ '● Läuft' if slide_status == 'active' else '○ ' + slide_status }}
+      {{ t('index.slideshow_running') if slide_status == 'active' else '○ ' + slide_status }}
     </div>
   </div>
   <div class="card">
-    <div class="card-label">Sync</div>
+    <div class="card-label">{{ t('index.card_sync') }}</div>
     <div id="sync-running-badge"
          class="status-badge {% if sync_running %}badge-ok{% else %}badge-warn{% endif %}">
-      {{ '● Läuft gerade' if sync_running else '○ Leerlauf' }}
+      {{ t('index.sync_running_now') if sync_running else t('index.sync_idle') }}
     </div>
   </div>
   <div class="card">
-    <div class="card-label">Bilder im Cache</div>
+    <div class="card-label">{{ t('index.card_cached_images') }}</div>
     <div class="stat-value" id="n-images">{{ n_images }}</div>
     <div class="stat-sub"><span id="size-gb">{{ size_gb }}</span> GB</div>
   </div>
   <div class="card">
-    <div class="card-label">Aktive Quelle</div>
+    <div class="card-label">{{ t('common.active_source') }}</div>
     <div class="stat-value">{{ (cfg.get('source', 'nextcloud') or 'nextcloud')|upper }}</div>
   </div>
 </div>
 
 <div class="card mt">
-  <div class="card-label">Letzter Sync</div>
+  <div class="card-label">{{ t('index.card_last_sync') }}</div>
   <div id="last-sync-block">
     {% if last_sync %}
-    <div class="mono">{{ last_sync.timestamp }} · Dauer: {{ '%.1f'|format(last_sync.duration) }}s</div>
-    <div class="stat-sub">+{{ last_sync.added }} neu, -{{ last_sync.removed }} gelöscht, {{ last_sync.skipped }} unverändert</div>
+    <div class="mono">{{ last_sync.timestamp }} · {{ t('index.duration_label') }}: {{ '%.1f'|format(last_sync.duration) }}s</div>
+    <div class="stat-sub">{{ t('index.sync_stats_line', added=last_sync.added, removed=last_sync.removed, skipped=last_sync.skipped) }}</div>
     {% else %}
-    <div class="mono">Noch kein Sync</div>
+    <div class="mono">{{ t('index.no_sync_yet') }}</div>
     {% endif %}
   </div>
 </div>
 
 <div class="card mt">
-  <div class="card-label">Dienste aktivieren/deaktivieren (dauerhaft, übersteht Neustart)</div>
+  <div class="card-label">{{ t('index.card_services_toggle') }}</div>
   <div class="action-row">
     <button class="btn btn-secondary" id="sync-toggle-btn" onclick="toggleAutoSync()">
-      {{ '⏸ Auto-Sync deaktivieren' if sync_enabled else '▶ Auto-Sync aktivieren' }}
+      {{ t('index.auto_sync_disable') if sync_enabled else t('index.auto_sync_enable') }}
     </button>
     <button class="btn btn-secondary" id="slideshow-toggle-btn" onclick="toggleSlideshowEnabled()">
-      {{ '⏸ Slideshow deaktivieren' if slideshow_enabled else '▶ Slideshow aktivieren' }}
+      {{ t('index.slideshow_disable') if slideshow_enabled else t('index.slideshow_enable') }}
     </button>
   </div>
 </div>
 
 <div class="card mt">
-  <div class="card-label">Sync – Aktueller Lauf</div>
+  <div class="card-label">{{ t('index.card_sync_current_run') }}</div>
   <div class="action-row">
-    <button class="btn btn-primary" onclick="syncNow()">🔄 Jetzt syncen</button>
+    <button class="btn btn-primary" onclick="syncNow()">{{ t('index.sync_now_btn') }}</button>
     <button class="btn btn-secondary" id="sync-stop-btn" onclick="syncStop()"
-            style="{% if not sync_running %}display:none{% endif %}">⏹ Sync stoppen</button>
+            style="{% if not sync_running %}display:none{% endif %}">{{ t('index.sync_stop_btn') }}</button>
   </div>
 </div>
 
 <div class="card mt">
-  <div class="card-label">Slideshow – Aktueller Prozess</div>
+  <div class="card-label">{{ t('index.card_slideshow_current_process') }}</div>
   <div class="action-row">
     <button class="btn btn-secondary" id="slideshow-start-btn" onclick="slideshowStart()"
-            style="{% if slide_status == 'active' %}display:none{% endif %}">▶ Starten</button>
+            style="{% if slide_status == 'active' %}display:none{% endif %}">{{ t('index.start_btn') }}</button>
     <button class="btn btn-secondary" id="slideshow-stop-btn" onclick="slideshowStop()"
-            style="{% if slide_status != 'active' %}display:none{% endif %}">⏹ Stoppen</button>
+            style="{% if slide_status != 'active' %}display:none{% endif %}">{{ t('index.slideshow_stop_btn') }}</button>
     <button class="btn btn-secondary" id="slideshow-restart-btn" onclick="restartSlideshow()"
-            style="{% if slide_status != 'active' %}display:none{% endif %}">↺ Neu starten</button>
+            style="{% if slide_status != 'active' %}display:none{% endif %}">{{ t('index.restart_btn') }}</button>
   </div>
 </div>
 
 <div class="card mt">
-  <div class="card-label">Display</div>
+  <div class="card-label">{{ t('index.card_display') }}</div>
   <div class="btn-row">
-    <button class="btn btn-small" onclick="setDisplay('on')">An</button>
-    <button class="btn btn-small btn-danger" onclick="setDisplay('off')">Aus</button>
+    <button class="btn btn-small" onclick="setDisplay('on')">{{ t('index.display_on_btn') }}</button>
+    <button class="btn btn-small btn-danger" onclick="setDisplay('off')">{{ t('index.display_off_btn') }}</button>
   </div>
 </div>
 
 <div class="card mt">
-  <div class="card-label">Herunterfahren</div>
+  <div class="card-label">{{ t('index.card_shutdown') }}</div>
   <p class="text-muted">
-    Schaltet zuerst HDMI aus, dann geordnetes Herunterfahren. Auch per
-    externem Trigger erreichbar: <code>POST /api/shutdown</code>
-    (z.B. aus Home Assistant vor dem Abschalten einer Smart-Plug-Steckdose).
+    {{ t('index.shutdown_desc_1') }} <code>POST /api/shutdown</code>
+    {{ t('index.shutdown_desc_2') }}
   </p>
-  <button class="btn btn-danger" onclick="shutdownNow()">⏻ Jetzt herunterfahren</button>
+  <button class="btn btn-danger" onclick="shutdownNow()">{{ t('index.shutdown_now_btn') }}</button>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-// Merkt sich den zuletzt bekannten Auto-Sync-Zustand, damit der Toggle-Button
-// weiß, was er beim nächsten Klick umschalten soll (und damit ein Klick
-// sofort optimistisch reagiert, ohne auf den nächsten Poll zu warten).
+// Translated strings needed by client-side JS (page reloads on language
+// switch, so these only need to be baked in once at render time).
+const T = {
+  autoSyncDisable:      {{ t('index.auto_sync_disable')|tojson }},
+  autoSyncEnable:       {{ t('index.auto_sync_enable')|tojson }},
+  slideshowDisable:     {{ t('index.slideshow_disable')|tojson }},
+  slideshowEnable:      {{ t('index.slideshow_enable')|tojson }},
+  slideshowRunning:     {{ t('index.slideshow_running')|tojson }},
+  syncRunningNow:       {{ t('index.sync_running_now')|tojson }},
+  syncIdle:             {{ t('index.sync_idle')|tojson }},
+  durationLabel:        {{ t('index.duration_label')|tojson }},
+  syncStatsLine:        {{ t('index.sync_stats_line')|tojson }},
+  noSyncYet:            {{ t('index.no_sync_yet')|tojson }},
+  restartingSlideshow:  {{ t('index.restarting_slideshow_toast')|tojson }},
+  displayTurnedOn:      {{ t('common.display_turned_on')|tojson }},
+  displayTurnedOff:     {{ t('common.display_turned_off')|tojson }},
+  shutdownConfirm:      {{ t('index.shutdown_confirm')|tojson }},
+};
+
+// Remembers the last known auto-sync state so the toggle button knows what
+// to switch to on the next click (and so a click reacts optimistically right
+// away, without waiting for the next poll).
 let syncEnabledState = {{ 'true' if sync_enabled else 'false' }};
 let slideshowEnabledState = {{ 'true' if slideshow_enabled else 'false' }};
 
 function renderSyncToggleBtn() {
   document.getElementById('sync-toggle-btn').textContent =
-    syncEnabledState ? '⏸ Auto-Sync deaktivieren' : '▶ Auto-Sync aktivieren';
+    syncEnabledState ? T.autoSyncDisable : T.autoSyncEnable;
 }
 
 function renderSlideshowToggleBtn() {
   document.getElementById('slideshow-toggle-btn').textContent =
-    slideshowEnabledState ? '⏸ Slideshow deaktivieren' : '▶ Slideshow aktivieren';
+    slideshowEnabledState ? T.slideshowDisable : T.slideshowEnable;
 }
 
 function show(el, visible) {
   el.style.display = visible ? '' : 'none';
 }
 
-// Live-Status: pollt /api/status, damit man sieht, wenn ein Sync/die
-// Slideshow gerade läuft, und Buttons/Karten sich automatisch aktualisieren
-// sobald sich der Zustand ändert – ohne die Seite manuell neu laden zu
-// müssen. "Stoppen"-Buttons werden dabei komplett aus- statt nur
-// ausgegraut, damit nur die gerade sinnvollen Aktionen sichtbar sind.
+// Live status: polls /api/status so you can see when a sync/the slideshow
+// is currently running, and buttons/cards update automatically as soon as
+// the state changes - without having to manually reload the page. "Stop"
+// buttons are hidden entirely rather than just greyed out, so only the
+// currently relevant actions are visible.
 async function refreshStatus() {
   try {
     const r = await fetch('/api/status');
     const d = await r.json();
 
     const syncBadge = document.getElementById('sync-running-badge');
-    syncBadge.textContent = d.sync_running ? '● Läuft gerade' : '○ Leerlauf';
+    syncBadge.textContent = d.sync_running ? T.syncRunningNow : T.syncIdle;
     syncBadge.className = 'status-badge ' + (d.sync_running ? 'badge-ok' : 'badge-warn');
     show(document.getElementById('sync-stop-btn'), d.sync_running);
 
@@ -136,7 +154,7 @@ async function refreshStatus() {
 
     const slideActive = d.slideshow === 'active';
     const slideBadge = document.getElementById('slideshow-status-badge');
-    slideBadge.textContent = slideActive ? '● Läuft' : '○ ' + d.slideshow;
+    slideBadge.textContent = slideActive ? T.slideshowRunning : '○ ' + d.slideshow;
     slideBadge.className = 'status-badge ' + (slideActive ? 'badge-ok' : 'badge-err');
     show(document.getElementById('slideshow-start-btn'), !slideActive);
     show(document.getElementById('slideshow-stop-btn'), slideActive);
@@ -150,16 +168,18 @@ async function refreshStatus() {
 
     const lastSyncEl = document.getElementById('last-sync-block');
     if (d.last_sync) {
+      const statsLine = T.syncStatsLine
+        .replace('{added}', d.last_sync.added)
+        .replace('{removed}', d.last_sync.removed)
+        .replace('{skipped}', d.last_sync.skipped);
       lastSyncEl.innerHTML =
-        '<div class="mono">' + d.last_sync.timestamp + ' · Dauer: ' +
+        '<div class="mono">' + d.last_sync.timestamp + ' · ' + T.durationLabel + ': ' +
         d.last_sync.duration.toFixed(1) + 's</div>' +
-        '<div class="stat-sub">+' + d.last_sync.added + ' neu, -' +
-        d.last_sync.removed + ' gelöscht, ' + d.last_sync.skipped +
-        ' unverändert</div>';
+        '<div class="stat-sub">' + statsLine + '</div>';
     } else {
-      lastSyncEl.innerHTML = '<div class="mono">Noch kein Sync</div>';
+      lastSyncEl.innerHTML = '<div class="mono">' + T.noSyncYet + '</div>';
     }
-  } catch (e) { /* Netzwerkfehler beim Polling ignorieren, nächster Tick versucht erneut */ }
+  } catch (e) { /* Ignore network errors during polling, next tick will retry */ }
 }
 setInterval(refreshStatus, 4000);
 renderSyncToggleBtn();
@@ -208,7 +228,7 @@ async function toggleSlideshowEnabled() {
 }
 async function restartSlideshow() {
   const r = await fetch('/api/restart_slideshow', {method: 'POST'});
-  toast('Slideshow wird neu gestartet…');
+  toast(T.restartingSlideshow);
   setTimeout(refreshStatus, 1500);
 }
 async function slideshowStart() {
@@ -229,10 +249,10 @@ async function setDisplay(power) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({power})
   });
-  toast('Display ' + (power === 'on' ? 'eingeschaltet' : 'ausgeschaltet'));
+  toast(power === 'on' ? T.displayTurnedOn : T.displayTurnedOff);
 }
 async function shutdownNow() {
-  if (!confirm('Pi jetzt herunterfahren?')) return;
+  if (!confirm(T.shutdownConfirm)) return;
   const r = await fetch('/api/shutdown', {method: 'POST'});
   const d = await r.json();
   toast(d.message, d.ok);

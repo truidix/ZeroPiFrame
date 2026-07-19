@@ -55,6 +55,16 @@ nav a {
 nav a:hover  { color: var(--text); background: rgba(255,255,255,.06); }
 nav a.active { color: var(--accent); background: rgba(68,147,248,.12); }
 
+.lang-switcher {
+  margin-left: auto;
+  background: rgba(255,255,255,.06);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.85rem;
+}
+
 /* Main content */
 main {
   max-width: 700px;

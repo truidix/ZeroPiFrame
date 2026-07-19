@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="{{ current_lang }}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -11,11 +11,17 @@
     <div class="header-inner">
       <span class="logo">📷 Photoframe</span>
       <nav>
-        <a href="/"         class="{% if request.path == '/' %}active{% endif %}">Status</a>
-        <a href="/sources"  class="{% if request.path == '/sources' %}active{% endif %}">Quellen</a>
-        <a href="/slideshow" class="{% if request.path == '/slideshow' %}active{% endif %}">Slideshow</a>
-        <a href="/display"  class="{% if request.path == '/display' %}active{% endif %}">Display</a>
+        <a href="/"         class="{% if request.path == '/' %}active{% endif %}">{{ t('nav.status') }}</a>
+        <a href="/sources"  class="{% if request.path == '/sources' %}active{% endif %}">{{ t('nav.sources') }}</a>
+        <a href="/slideshow" class="{% if request.path == '/slideshow' %}active{% endif %}">{{ t('nav.slideshow') }}</a>
+        <a href="/display"  class="{% if request.path == '/display' %}active{% endif %}">{{ t('nav.display') }}</a>
       </nav>
+      <select id="lang-switcher" class="lang-switcher" onchange="switchLanguage(this.value)"
+              aria-label="{{ t('common.language_label') }}">
+        {% for code in available_languages %}
+        <option value="{{ code }}" {% if code == current_lang %}selected{% endif %}>{{ code|upper }}</option>
+        {% endfor %}
+      </select>
     </div>
   </header>
 
@@ -24,7 +30,7 @@
   </main>
 
   <script>
-    // Toast-Benachrichtigungen
+    // Toast notifications
     function toast(msg, ok = true) {
       const t = document.createElement('div');
       t.className = 'toast ' + (ok ? 'toast-ok' : 'toast-err');
@@ -34,10 +40,24 @@
       setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 400); }, 3000);
     }
 
-    // "Gespeichert"-Banner
+    // "Saved" banner
     if (new URLSearchParams(location.search).get('saved')) {
-      toast('Einstellungen gespeichert ✓');
+      toast({{ t('common.saved_toast')|tojson }});
       history.replaceState(null, '', location.pathname);
+    }
+
+    async function switchLanguage(lang) {
+      const r = await fetch('/api/set_language', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({language: lang})
+      });
+      const d = await r.json();
+      if (d.ok) {
+        location.reload();
+      } else {
+        toast(d.message, false);
+      }
     }
   </script>
   {% block scripts %}{% endblock %}

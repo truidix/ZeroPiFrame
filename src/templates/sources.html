@@ -1,114 +1,113 @@
 {% extends "base.html" %}
-{% block title %} – Quellen{% endblock %}
+{% block title %} – {{ t('nav.sources') }}{% endblock %}
 
 {% block content %}
-<h1>Bildquellen</h1>
+<h1>{{ t('sources.heading') }}</h1>
 
 <form method="POST">
   <div class="card">
-    <div class="card-label">Aktive Quelle</div>
+    <div class="card-label">{{ t('common.active_source') }}</div>
     <div class="radio-group">
       <label class="radio-option">
         <input type="radio" name="source" value="nextcloud"
                {% if cfg.get('source','nextcloud') == 'nextcloud' %}checked{% endif %}>
-        <span>Nextcloud (WebDAV)</span>
+        <span>{{ t('sources.nextcloud_option') }}</span>
       </label>
       <label class="radio-option">
         <input type="radio" name="source" value="immich"
                {% if cfg.get('source') == 'immich' %}checked{% endif %}>
-        <span>Immich (API)</span>
+        <span>{{ t('sources.immich_option') }}</span>
       </label>
     </div>
   </div>
 
   <!-- Nextcloud -->
   <div class="card mt source-panel" id="panel-nextcloud">
-    <h2>Nextcloud / WebDAV</h2>
+    <h2>{{ t('sources.nextcloud_heading') }}</h2>
 
-    <label>Server-URL (WebDAV-Pfad)
+    <label>{{ t('sources.nc_url_label') }}
       <input type="url" name="nc_url"
              value="{{ cfg.get('nextcloud', {}).get('url', '') }}"
-             placeholder="https://cloud.example.com/remote.php/dav/files/USER/Fotos/">
+             placeholder="{{ t('sources.nc_url_placeholder') }}">
     </label>
 
-    <label>Benutzername
+    <label>{{ t('sources.nc_user_label') }}
       <input type="text" name="nc_user"
              value="{{ cfg.get('nextcloud', {}).get('username', '') }}">
     </label>
 
-    <label>Passwort
-      <input type="password" name="nc_pass" placeholder="(unverändert lassen = bleibt bestehen)">
+    <label>{{ t('sources.password_label') }}
+      <input type="password" name="nc_pass" placeholder="{{ t('sources.keep_unchanged_placeholder') }}">
     </label>
 
-    <label>Unterordner synchronisieren (optional, einer pro Zeile)
+    <label>{{ t('sources.nc_folders_label') }}
       <textarea name="nc_folders" rows="3"
-                placeholder="Urlaub&#10;Familie&#10;(leer = alles)">{{ (cfg.get('nextcloud', {}).get('folders', []) or []) | join('\n') }}</textarea>
+                placeholder="{{ t('sources.nc_folders_placeholder') }}">{{ (cfg.get('nextcloud', {}).get('folders', []) or []) | join('\n') }}</textarea>
     </label>
 
     <label class="checkbox-label">
       <input type="checkbox" name="nc_verify_ssl"
              {% if cfg.get('nextcloud', {}).get('verify_ssl', True) %}checked{% endif %}>
-      SSL-Zertifikat prüfen (deaktivieren bei selbstsigniertem Zertifikat)
+      {{ t('sources.nc_verify_ssl_label') }}
     </label>
 
-    <label>Mindestauflösung (kleinere Seite, Pixel)
+    <label>{{ t('sources.min_resolution_label') }}
       <input type="number" name="nc_min_res" min="0" step="10"
              value="{{ cfg.get('nextcloud', {}).get('min_resolution_px', 0) }}">
-      <small>Fotos unterhalb dieser Auflösung werden nach dem Download verworfen
-             (WebDAV liefert die Auflösung nicht im Voraus). 0 = kein Filter.
-             Bereits gecachte Fotos darunter werden beim nächsten Sync automatisch
-             entfernt.</small>
+      <small>{{ t('sources.nc_min_res_desc') }}</small>
     </label>
 
     <button type="button" class="btn btn-secondary mt-sm"
-            onclick="testConnection('nextcloud')">Verbindung testen</button>
+            onclick="testConnection('nextcloud')">{{ t('sources.test_connection_btn') }}</button>
     <div id="nc-result" class="test-result"></div>
   </div>
 
   <!-- Immich -->
   <div class="card mt source-panel" id="panel-immich">
-    <h2>Immich</h2>
+    <h2>{{ t('sources.immich_heading') }}</h2>
 
-    <label>Server-URL
+    <label>{{ t('sources.im_url_label') }}
       <input type="url" name="im_url"
              value="{{ cfg.get('immich', {}).get('url', '') }}"
              placeholder="http://192.168.1.100:2283">
     </label>
 
-    <label>API-Key
+    <label>{{ t('sources.im_api_key_label') }}
       <input type="password" name="im_key"
-             placeholder="(unverändert lassen = bleibt bestehen)">
-      <small>In Immich unter: Einstellungen → API-Schlüssel → Neuen Schlüssel erstellen</small>
+             placeholder="{{ t('sources.keep_unchanged_placeholder') }}">
+      <small>{{ t('sources.im_api_key_hint') }}</small>
     </label>
 
-    <label>Alben synchronisieren (optional, einer pro Zeile)
+    <label>{{ t('sources.im_albums_label') }}
       <textarea name="im_albums" rows="3"
-                placeholder="Bilderrahmen&#10;Familie&#10;(leer = alle Fotos)">{{ (cfg.get('immich', {}).get('albums', []) or []) | join('\n') }}</textarea>
+                placeholder="{{ t('sources.im_albums_placeholder') }}">{{ (cfg.get('immich', {}).get('albums', []) or []) | join('\n') }}</textarea>
     </label>
 
-    <label>Mindestauflösung (kleinere Seite, Pixel)
+    <label>{{ t('sources.min_resolution_label') }}
       <input type="number" name="im_min_res" min="0" step="10"
              value="{{ cfg.get('immich', {}).get('min_resolution_px', 0) }}">
-      <small>Fotos unterhalb dieser Auflösung werden nicht heruntergeladen (0 = kein Filter).
-             Verhindert sichtbares Pixelbrei durch Hochskalieren von von Haus aus
-             niedrig aufgelösten Originalen. Bereits gecachte Fotos darunter werden
-             beim nächsten Sync automatisch entfernt.</small>
+      <small>{{ t('sources.im_min_res_desc') }}</small>
     </label>
 
     <button type="button" class="btn btn-secondary mt-sm"
-            onclick="testConnection('immich')">Verbindung testen</button>
+            onclick="testConnection('immich')">{{ t('sources.test_connection_btn') }}</button>
     <div id="im-result" class="test-result"></div>
   </div>
 
   <div class="action-row mt">
-    <button type="submit" class="btn btn-primary">Speichern</button>
+    <button type="submit" class="btn btn-primary">{{ t('common.save_btn') }}</button>
   </div>
 </form>
 {% endblock %}
 
 {% block scripts %}
 <script>
-// Panels je nach gewählter Quelle hervorheben
+const T = {
+  testingConnection: {{ t('sources.testing_connection')|tojson }},
+  networkError:      {{ t('sources.network_error')|tojson }},
+};
+
+// Highlight the panel matching the currently selected source
 function updatePanels() {
   const val = document.querySelector('input[name="source"]:checked')?.value;
   document.querySelectorAll('.source-panel').forEach(p => {
@@ -121,7 +120,7 @@ updatePanels();
 
 async function testConnection(type) {
   const resultEl = document.getElementById(type === 'nextcloud' ? 'nc-result' : 'im-result');
-  resultEl.textContent = 'Teste Verbindung…';
+  resultEl.textContent = T.testingConnection;
   resultEl.className   = 'test-result';
 
   const payload = {type};
@@ -145,7 +144,7 @@ async function testConnection(type) {
     resultEl.textContent = (d.ok ? '✓ ' : '✗ ') + d.message;
     resultEl.className   = 'test-result ' + (d.ok ? 'result-ok' : 'result-err');
   } catch(e) {
-    resultEl.textContent = '✗ Netzwerkfehler';
+    resultEl.textContent = T.networkError;
     resultEl.className   = 'test-result result-err';
   }
 }

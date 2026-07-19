@@ -1,28 +1,35 @@
-# Photoframe Konfiguration
-# Kopieren nach /opt/photoframe/config.yaml und anpassen.
+# Photoframe Configuration
+# Copy to /opt/photoframe/config.yaml and adjust.
 
-# Aktive Bildquelle: "nextcloud" oder "immich"
+# Language of the web interface. Available values depend on which files
+# are present under src/translations/ (e.g. "de", "en") - can also be set
+# in the web interface itself via the language selector at the top right,
+# which then writes it here automatically.
+language: de
+
+# Active image source: "nextcloud" or "immich"
 source: nextcloud
 
 # ---------------------------------------------------------------------------
 # Nextcloud / WebDAV
 # ---------------------------------------------------------------------------
 nextcloud:
-  # WebDAV-URL: In Nextcloud unter Einstellungen → Dateien → WebDAV-Adresse
+  # WebDAV URL: in Nextcloud under Settings -> Files -> WebDAV address
   url: "https://cloud.example.com/remote.php/dav/files/BENUTZERNAME/Fotos/"
   username: "mein_benutzer"
   password: "mein_passwort"
-  # Optional: Nur bestimmte Unterordner synchronisieren (leer = alles)
+  # Optional: only sync specific subfolders (empty = everything)
   # folders:
-  #   - "Urlaub 2024"
-  #   - "Familie"
-  verify_ssl: true   # false bei selbstsigniertem Zertifikat
-  # Optional: Fotos mit kleinerer Seite unter diesem Wert (Pixel) werden nach
-  # dem Download verworfen (WebDAV liefert die Auflösung nicht im Voraus,
-  # anders als bei Immich). Gegen sichtbares Pixelbrei durch Hochskalieren
-  # von von Haus aus niedrig aufgelösten Originalen. 0 = kein Filter.
-  # Bereits gecachte Fotos unterhalb des Schwellwerts werden beim nächsten
-  # Sync automatisch aus dem Cache entfernt (delete_removed).
+  #   - "Vacation 2024"
+  #   - "Family"
+  verify_ssl: true   # false for a self-signed certificate
+  # Optional: photos whose shorter side is below this value (pixels) are
+  # discarded after download (WebDAV doesn't provide the resolution in
+  # advance, unlike Immich). Guards against visible pixelation from
+  # upscaling originals that are already low resolution to begin with.
+  # 0 = no filter. Photos already in the cache that fall below the
+  # threshold are automatically removed from the cache on the next sync
+  # (delete_removed).
   min_resolution_px: 0
 
 # ---------------------------------------------------------------------------
@@ -31,56 +38,56 @@ nextcloud:
 immich:
   url: "http://192.168.1.100:2283"
   api_key: "DEIN_API_KEY_HIER"
-  # Optional: Nur bestimmte Alben (leer oder weglassen = alle Fotos)
+  # Optional: only specific albums (empty or omitted = all photos)
   # albums:
-  #   - "Bilderrahmen"
-  all_photos: true   # wird automatisch false wenn albums angegeben
-  # Optional: Fotos mit kleinerer Seite unter diesem Wert (Pixel) werden gar
-  # nicht erst heruntergeladen. Nützlich gegen sichtbares Pixelbrei durch
-  # Hochskalieren von von Haus aus niedrig aufgelösten Originalen (alte
-  # Handyfotos, WhatsApp-Komprimierung, Screenshots). 0 = kein Filter.
-  # Bereits gecachte Fotos unterhalb des Schwellwerts werden beim nächsten
-  # Sync automatisch aus dem Cache entfernt (delete_removed).
+  #   - "Picture Frame"
+  all_photos: true   # automatically becomes false if albums is set
+  # Optional: photos whose shorter side is below this value (pixels) are
+  # not even downloaded. Useful against visible pixelation from upscaling
+  # originals that are already low resolution to begin with (old phone
+  # photos, WhatsApp compression, screenshots). 0 = no filter. Photos
+  # already in the cache that fall below the threshold are automatically
+  # removed from the cache on the next sync (delete_removed).
   min_resolution_px: 0
 
 # ---------------------------------------------------------------------------
 # Sync
 # ---------------------------------------------------------------------------
 sync:
-  interval_minutes: 60        # Wie oft synchronisiert wird
-  max_cache_size_gb: 5.0      # Maximale Cache-Größe (älteste Bilder werden entfernt)
-  delete_removed: true        # Lokal löschen wenn auf Server nicht mehr vorhanden
+  interval_minutes: 60        # How often to synchronize
+  max_cache_size_gb: 5.0      # Maximum cache size (oldest images are removed)
+  delete_removed: true        # Delete locally when no longer present on the server
 
 # ---------------------------------------------------------------------------
 # Slideshow
 # ---------------------------------------------------------------------------
 slideshow:
-  interval_seconds: 30        # Anzeigedauer pro Bild
-  # Aktivierte Übergänge (Mehrfachauswahl im Web-UI). Bei mehr als einem
-  # Eintrag wechselt die Slideshow bei jedem Bild zufällig zwischen ihnen.
-  # Mögliche Werte: none, fade, ken_burns, slide_left, slide_right,
+  interval_seconds: 30        # Display duration per image
+  # Enabled transitions (multi-select in the web UI). With more than one
+  # entry, the slideshow randomly alternates between them on each image.
+  # Possible values: none, fade, ken_burns, slide_left, slide_right,
   #                 slide_up, slide_down, wipe_left, wipe_right, wipe_up,
   #                 wipe_down, zoom_in, dissolve, iris, barn_door, blinds, flash
   enabled_transitions:
     - "ken_burns"
   transition_duration_ms: 1500
-  ken_burns_zoom: 0.08        # Zoom-Stärke (0.04–0.20)
-  shuffle: true               # Zufällige Reihenfolge
-  fit_mode: "contain"         # "contain" (Balken) oder "cover" (zuschneiden)
+  ken_burns_zoom: 0.08        # Zoom strength (0.04-0.20)
+  shuffle: true               # Random order
+  fit_mode: "contain"         # "contain" (letterbox bars) or "cover" (crop)
   background_color: "#000000"
-  video_enabled: true         # Videos abspielen (MP4, MKV, MOV, AVI …)
-  video_audio: false          # Ton bei Videos (true = mit Ton)
+  video_enabled: true         # Play videos (MP4, MKV, MOV, AVI ...)
+  video_audio: false          # Sound for videos (true = with sound)
 
 # ---------------------------------------------------------------------------
-# Display / Energiesparen
+# Display / power saving
 # ---------------------------------------------------------------------------
 display:
-  # HDMI-Zeitplan (leer = immer an)
+  # HDMI schedule (empty = always on)
   on_time:  "08:00"
   off_time: "23:00"
-  # Automatisches Herunterfahren (leer = deaktiviert). Für Betrieb an einer
-  # Zeitschaltuhr/Smart-Plug: der Pi fährt sich selbst ein paar Minuten VOR
-  # der geplanten Abschaltzeit der Steckdose sauber herunter, statt dass der
-  # Strom roh gekappt wird (schont die SD-Karte). Beim nächsten Einschalten
-  # der Steckdose bootet der Pi automatisch neu.
+  # Automatic shutdown (empty = disabled). For operation on a timer
+  # switch/smart plug: the Pi shuts itself down cleanly a few minutes
+  # BEFORE the plug's scheduled power-off time, instead of having the
+  # power cut raw (which is easier on the SD card). The Pi boots back up
+  # automatically the next time the plug switches on.
   shutdown_time: "22:55"
