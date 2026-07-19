@@ -331,17 +331,15 @@ PYTHON="$VENV_DIR/bin/python3"
 # Shows a "starting up" notice image over the framebuffer from early in
 # boot until photoframe-slideshow.service takes over the display - covers
 # the stretch of boot where systemd/kernel status messages would
-# otherwise be the only thing on screen. Conflicts= (declared on both
-# units, see below) makes systemd automatically stop this one the moment
-# the slideshow actually starts, without any extra scripting.
+# otherwise be the only thing on screen.
 #
-# Two real issues were found via on-device diagnostics (journalctl +
-# dmesg) after this first failed on actual hardware:
+# Three real issues were found via on-device diagnostics after this
+# repeatedly failed/misbehaved on actual hardware:
 #   1. dmesg showed TWO framebuffers registering as fb0 in sequence - a
 #      firmware-provided "simple-framebuffer" at ~1.8s, then the real
 #      vc4-drm framebuffer ("vc4drmfb") at ~12.2s. Starting right after
-#      local-fs.target risked racing that handoff. Now also waits for
-#      systemd-udev-settle.service, the same dependency
+#      local-fs.target risked racing that handoff. Fixed by also waiting
+#      for systemd-udev-settle.service, the same dependency
 #      photoframe-slideshow.service already uses without issue - by then
 #      the swap has long completed and fb0 is the real, final device.
 #   2. journalctl showed fbi starting, loading its font, and then
@@ -349,14 +347,27 @@ PYTHON="$VENV_DIR/bin/python3"
 #      almost immediately rather than staying up. fbi is built as an
 #      interactive console viewer; with no controlling terminal (the
 #      systemd default) and stdin explicitly </dev/null, it likely read
-#      EOF right away and quit. TTYPath=/dev/tty1 + StandardInput=tty
-#      gives it a real terminal to hold, matching how it's normally used.
+#      EOF right away and quit. Fixed with TTYPath=/dev/tty1 +
+#      StandardInput=tty, so fbi has an actual terminal to hold.
+#   3. With (1) and (2) fixed, the unit showed "inactive (dead)" with ZERO
+#      log entries - never even attempted to start. Root cause: it
+#      previously had Conflicts=photoframe-slideshow.service on both
+#      units, intended to make systemd auto-stop this one once the
+#      slideshow starts. But systemd computes the ENTIRE boot transaction
+#      up front (sysinit.target's wants and multi-user.target's wants
+#      together, not incrementally) - when two jobs in the same
+#      transaction conflict, systemd resolves it by dropping whichever
+#      job isn't required elsewhere, which is this one (nothing requires
+#      it; multi-user.target does require the slideshow). So it never got
+#      a start job in the first place. Conflicts= removed entirely;
+#      photoframe-slideshow.service's ExecStartPre now just kills any
+#      still-running instance of this directly (a plain, imperative fix
+#      that sidesteps transaction-resolution timing altogether).
 cat > /etc/systemd/system/photoframe-boot-splash.service << 'EOF'
 [Unit]
 Description=Photoframe boot splash (hides console/systemd status messages during boot)
 After=local-fs.target systemd-udev-settle.service
 Before=photoframe-slideshow.service
-Conflicts=photoframe-slideshow.service
 
 [Service]
 Type=simple
@@ -385,7 +396,6 @@ cat > /etc/systemd/system/photoframe-slideshow.service << EOF
 [Unit]
 Description=Photoframe Slideshow
 After=multi-user.target systemd-udev-settle.service
-Conflicts=photoframe-boot-splash.service
 
 [Service]
 User=$FRAME_USER
@@ -394,6 +404,12 @@ WorkingDirectory=$INSTALL_DIR
 Environment="SDL_VIDEODRIVER=kmsdrm"
 Environment="SDL_VIDEO_KMSDRM_DEVICE=/dev/dri/card0"
 Environment="SDL_AUDIODRIVER=dummy"
+# Kill any still-running boot-splash fbi directly, rather than relying on
+# systemd's Conflicts= (which turned out to just drop that unit's start
+# job from the initial boot transaction instead of sequencing a
+# stop-then-start - see the long comment above
+# photoframe-boot-splash.service for the full story).
+ExecStartPre=-/usr/bin/pkill -f /usr/bin/fbi
 ExecStartPre=/bin/sleep 3
 ExecStart=$PYTHON $INSTALL_DIR/slideshow.py
 StandardOutput=append:$LOG_DIR/photoframe-slideshow.log
