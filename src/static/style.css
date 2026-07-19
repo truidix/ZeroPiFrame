@@ -61,8 +61,12 @@ nav a.active { color: var(--accent); background: rgba(68,147,248,.12); }
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 0.25rem 0.4rem;
+  padding: 0.25rem 1.2rem 0.25rem 0.4rem;
   font-size: 0.85rem;
+  width: fit-content;
+  /* Options are just 2-letter codes (EN/DE) - no need for the browser's
+     default select width, which otherwise tends to be much wider than
+     the content actually needs. */
 }
 
 /* Main content */
