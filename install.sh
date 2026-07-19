@@ -344,11 +344,6 @@ Conflicts=photoframe-slideshow.service
 
 [Service]
 Type=simple
-# Reap any leftover fbi instance from the initramfs-level splash (see
-# further below) before drawing our own - that one only knows the
-# language that was configured whenever update-initramfs last ran, this
-# one always reads the current config.yaml fresh.
-ExecStartPre=-/usr/bin/pkill -f /photoframe/boot-splash.png
 # The framebuffer device can take a moment to appear after the KMS driver
 # probes - wait for it rather than failing outright if we win that race.
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 20); do [ -e /dev/fb0 ] && exit 0; sleep 0.5; done; exit 1'
@@ -477,136 +472,24 @@ EOF
 chown root:root /usr/lib/systemd/system-shutdown/photoframe-splash.sh
 chmod 755 /usr/lib/systemd/system-shutdown/photoframe-splash.sh
 
-# Earliest-possible boot splash: photoframe-boot-splash.service (above)
-# can only start once the real root filesystem is mounted
-# (After=local-fs.target) - there's still a real gap between kernel
-# handoff and that point where kernel/systemd boot messages could show.
-# This closes that gap by drawing the splash from WITHIN the initramfs,
-# before the real root is even mounted - the earliest point a splash can
-# realistically appear on this hardware.
+# REVERTED: an earlier version of this script also baked a splash into
+# the initramfs itself (via /etc/initramfs-tools/hooks+scripts/init-premount)
+# to cover the gap before photoframe-boot-splash.service can start. That
+# caused a real boot failure on actual hardware (fbi erroring against
+# /dev/fb0, apparently a device-numbering/timing quirk with vc4-kms-v3d,
+# and/or the larger initramfs overflowing the small /boot/firmware
+# partition) - confirmed and recovered via SSH. Deliberately not
+# reintroducing it without a safer, hardware-tested design.
 #
-# Deliberately kept as an ADDITION, not a replacement, for
-# photoframe-boot-splash.service: this baked-in image reflects whatever
-# language was configured the last time update-initramfs ran (below), so
-# it goes stale if you change the language afterwards without
-# re-running it - photoframe-boot-splash.service always reads the
-# current config.yaml fresh on every real boot, and also acts as a
-# fallback if this initramfs hook ever silently fails to produce a
-# splash (missing kernel module, fbi copy failure, etc: see the
-# defensive "exit 0, never abort boot" comments in both scripts below).
-info "8b/10 Baking an early (pre-root-mount) boot splash into the initramfs"
-mkdir -p /etc/initramfs-tools/hooks /etc/initramfs-tools/scripts/init-premount
-
-cat > /etc/initramfs-tools/hooks/photoframe-splash << 'EOF'
-#!/bin/bash
-# Copies fbi + the current boot-splash image into the initramfs being
-# built, so scripts/init-premount/photoframe-splash (installed alongside
-# this) can show it before the real root filesystem is mounted.
-#
-# Runs at initramfs BUILD time (via update-initramfs/mkinitramfs - once
-# at install time, and again automatically whenever a kernel update
-# triggers a rebuild), on the fully-booted host system - NOT inside the
-# restricted initramfs environment itself. Any failure here just means a
-# plainer initramfs; it can never break a real boot, since none of this
-# runs until update-initramfs is actually invoked, well before any reboot.
-PREREQ=""
-prereqs() { echo "$PREREQ"; }
-case "$1" in
-    prereqs) prereqs; exit 0 ;;
-esac
-
-. /usr/share/initramfs-tools/hook-functions
-
-# fbi not installed (shouldn't happen - install.sh installs it in step
-# 0b/1 - but this hook can also be re-triggered independently by a kernel
-# update, so check again defensively) - skip quietly.
-command -v fbi >/dev/null 2>&1 || exit 0
-copy_exec /usr/bin/fbi /usr/bin
-
-# Resolve today's configured-language image the same way the rest of the
-# project does, and copy it into the initramfs under one fixed name -
-# avoids needing any config.yaml/YAML parsing inside the very minimal
-# shell environment the init-premount script has to run in later.
-IMAGE=""
-if [[ -x /opt/photoframe/resolve-notice-image.sh ]]; then
-    IMAGE="$(/opt/photoframe/resolve-notice-image.sh booting 2>/dev/null || true)"
-fi
-[[ -n "$IMAGE" && -f "$IMAGE" ]] || IMAGE="/opt/photoframe/assets/booting-en.png"
-
-if [[ -f "$IMAGE" ]]; then
-    mkdir -p "$DESTDIR/photoframe"
-    cp "$IMAGE" "$DESTDIR/photoframe/boot-splash.png"
-fi
-
-exit 0
-EOF
-chown root:root /etc/initramfs-tools/hooks/photoframe-splash
-chmod 755 /etc/initramfs-tools/hooks/photoframe-splash
-
-cat > /etc/initramfs-tools/scripts/init-premount/photoframe-splash << 'EOF'
-#!/bin/sh
-# Draws the boot-splash image (baked in at initramfs build time by
-# hooks/photoframe-splash) as early as possible during boot - before the
-# real root filesystem is mounted. Everything before this point is kernel
-# decompression/early console messages that "quiet"/"loglevel=3" (set on
-# the kernel cmdline by install.sh) already suppress most of.
-#
-# Plain POSIX sh, not bash: the initramfs shell environment is typically
-# busybox/dash, bash may not be present at all.
-#
-# Deliberately has NO error handling that could abort or delay boot: every
-# check below is a plain "if not available, just exit 0" - a missing fbi
-# binary, missing image, or a framebuffer device that never appears
-# simply means boot proceeds exactly as it always did before this feature
-# existed. photoframe-boot-splash.service (a normal systemd unit, started
-# once the real root is up) covers the rest of boot regardless.
-
-PREREQ=""
-
-prereqs()
-{
-    echo "$PREREQ"
-}
-
-case "$1" in
-    prereqs)
-        prereqs
-        exit 0
-        ;;
-esac
-
-[ -x /usr/bin/fbi ] || exit 0
-[ -f /photoframe/boot-splash.png ] || exit 0
-
-# Wait briefly for the framebuffer device (KMS/DRM driver still probing) -
-# bounded, so a missing/slow device can never hang boot.
-i=0
-while [ ! -e /dev/fb0 ] && [ "$i" -lt 10 ]; do
-    sleep 0.5
-    i=$((i + 1))
-done
-[ -e /dev/fb0 ] || exit 0
-
-# Backgrounded: must not block the rest of the initramfs boot sequence.
-# The drawn frame stays on the framebuffer regardless of what happens to
-# this process afterwards (it may end up orphaned across switch_root) -
-# fbi just writes pixel data to a device, it doesn't need to keep running
-# for the picture to stay visible. photoframe-boot-splash.service (once
-# the real root is up) explicitly reaps any leftover instance of this
-# process before drawing its own, always-current-language image over it.
-/usr/bin/fbi -T 1 -d /dev/fb0 -a --noverbose /photoframe/boot-splash.png \
-    </dev/null >/dev/null 2>&1 &
-
-exit 0
-EOF
-chown root:root /etc/initramfs-tools/scripts/init-premount/photoframe-splash
-chmod 755 /etc/initramfs-tools/scripts/init-premount/photoframe-splash
-
-if command -v update-initramfs &>/dev/null; then
-    info "Rebuilding initramfs (can take a while on a Pi Zero)..."
-    update-initramfs -u || warn "update-initramfs failed - the pre-root-mount splash won't be active, but photoframe-boot-splash.service still covers boot from a bit later on"
-else
-    warn "update-initramfs not found - skipping the pre-root-mount splash (photoframe-boot-splash.service still covers boot from a bit later on)"
+# Cleans up leftovers from that reverted version, in case this is a
+# reinstall/update on a system that still has it (belt-and-suspenders on
+# top of whatever manual cleanup was already done - safe to run even if
+# there's nothing to clean up).
+if [[ -f /etc/initramfs-tools/hooks/photoframe-splash || -f /etc/initramfs-tools/scripts/init-premount/photoframe-splash ]]; then
+    warn "Removing a previously installed initramfs boot-splash hook (reverted - caused boot failures)"
+    rm -f /etc/initramfs-tools/hooks/photoframe-splash
+    rm -f /etc/initramfs-tools/scripts/init-premount/photoframe-splash
+    command -v update-initramfs &>/dev/null && update-initramfs -u || true
 fi
 
 # ---------------------------------------------------------------------------
