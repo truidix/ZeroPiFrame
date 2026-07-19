@@ -90,14 +90,24 @@ def cached_files() -> dict[str, Path]:
             if f.is_file() and f.suffix.lower() in SUPPORTED}
 
 
-def enforce_cache_limit(max_gb: float):
-    """Deletes the oldest images when the cache limit is exceeded."""
+def enforce_cache_limit(max_gb: float) -> int:
+    """Deletes the oldest images when the cache limit is exceeded.
+
+    Returns the number of files deleted this way, so the caller can fold
+    it into its own "Sync completed" summary - this used to delete and
+    log each file individually ("Cache limit: deleting ...") but never
+    reported the count anywhere else, silently undercounting the
+    summary's "-N deleted" figure whenever a sync run added enough new
+    photos to push the cache over its limit (e.g. right after adding a
+    new album/folder while another one was removed).
+    """
     total = cache_size_gb() * (1024 ** 3)
     limit = max_gb * (1024 ** 3)
     if total <= limit:
-        return
+        return 0
     target = limit * 0.9
     files  = sorted(CACHE_DIR.iterdir(), key=lambda f: f.stat().st_mtime)
+    evicted = 0
     for f in files:
         if total <= target:
             break
@@ -108,6 +118,8 @@ def enforce_cache_limit(max_gb: float):
         log.info(f'Cache limit: deleting {f.name}')
         f.unlink(missing_ok=True)
         total -= size
+        evicted += 1
+    return evicted
 
 
 def _download_atomic(resp, dest: Path) -> int:
@@ -631,7 +643,10 @@ def main():
         log.error(f'Sync error: {e}', exc_info=True)
         sys.exit(1)
 
-    enforce_cache_limit(max_gb)
+    evicted = enforce_cache_limit(max_gb)
+    if evicted:
+        log.info(f'{evicted} file(s) evicted due to cache limit')
+        removed += evicted
 
     elapsed = time.time() - start
     log.info(f'Sync completed in {elapsed:.1f}s - '
