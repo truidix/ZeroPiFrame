@@ -328,32 +328,52 @@ info "8/10 Setting up systemd services"
 # ---------------------------------------------------------------------------
 PYTHON="$VENV_DIR/bin/python3"
 
-# Shows a "starting up" notice image over the framebuffer from very early
-# in boot (sysinit.target, well before multi-user.target/the slideshow)
-# until photoframe-slideshow.service takes over the display - covers the
-# stretch of boot where systemd/kernel status messages would otherwise be
-# the only thing on screen. Conflicts= (declared on both units, see below)
-# makes systemd automatically stop this one the moment the slideshow
-# actually starts, without any extra scripting.
+# Shows a "starting up" notice image over the framebuffer from early in
+# boot until photoframe-slideshow.service takes over the display - covers
+# the stretch of boot where systemd/kernel status messages would
+# otherwise be the only thing on screen. Conflicts= (declared on both
+# units, see below) makes systemd automatically stop this one the moment
+# the slideshow actually starts, without any extra scripting.
+#
+# Two real issues were found via on-device diagnostics (journalctl +
+# dmesg) after this first failed on actual hardware:
+#   1. dmesg showed TWO framebuffers registering as fb0 in sequence - a
+#      firmware-provided "simple-framebuffer" at ~1.8s, then the real
+#      vc4-drm framebuffer ("vc4drmfb") at ~12.2s. Starting right after
+#      local-fs.target risked racing that handoff. Now also waits for
+#      systemd-udev-settle.service, the same dependency
+#      photoframe-slideshow.service already uses without issue - by then
+#      the swap has long completed and fb0 is the real, final device.
+#   2. journalctl showed fbi starting, loading its font, and then
+#      "Deactivated successfully" about a second later - it was exiting
+#      almost immediately rather than staying up. fbi is built as an
+#      interactive console viewer; with no controlling terminal (the
+#      systemd default) and stdin explicitly </dev/null, it likely read
+#      EOF right away and quit. TTYPath=/dev/tty1 + StandardInput=tty
+#      gives it a real terminal to hold, matching how it's normally used.
 cat > /etc/systemd/system/photoframe-boot-splash.service << 'EOF'
 [Unit]
 Description=Photoframe boot splash (hides console/systemd status messages during boot)
-After=local-fs.target
+After=local-fs.target systemd-udev-settle.service
 Before=photoframe-slideshow.service
 Conflicts=photoframe-slideshow.service
 
 [Service]
 Type=simple
-# The framebuffer device can take a moment to appear after the KMS driver
-# probes - wait for it rather than failing outright if we win that race.
+# Belt-and-suspenders on top of After=systemd-udev-settle.service above -
+# wait for the (by now, settled) framebuffer device rather than failing
+# outright on the rare chance it's still not there.
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 20); do [ -e /dev/fb0 ] && exit 0; sleep 0.5; done; exit 1'
-ExecStart=/bin/bash -c 'exec /usr/bin/fbi -T 1 -d /dev/fb0 -a --noverbose "$(/opt/photoframe/resolve-notice-image.sh booting)" < /dev/null'
+ExecStart=/bin/bash -c 'exec /usr/bin/fbi -T 1 -d /dev/fb0 -a --noverbose "$(/opt/photoframe/resolve-notice-image.sh booting)"'
 Restart=no
 # Safety net: if the slideshow never actually starts (e.g. config.yaml
 # isn't filled in yet), don't leave this running forever - stop after a
 # generous timeout instead of a stale screen with no timeout at all.
 RuntimeMaxSec=90
 TimeoutStopSec=3
+StandardInput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
 StandardOutput=journal
 StandardError=journal
 
