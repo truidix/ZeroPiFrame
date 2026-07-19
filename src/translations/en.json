@@ -149,6 +149,9 @@
   "api.slideshow_stopped": "Slideshow stopped",
   "api.slideshow_enabled": "Slideshow enabled",
   "api.slideshow_disabled": "Slideshow disabled",
+  "install.placeholder_heading": "Update running",
+  "install.placeholder_line1": "Please hold on a moment -",
+  "install.placeholder_line2": "the slideshow will restart automatically afterwards.",
   "api.shutdown_initiated": "HDMI off, shutdown initiated",
   "api.cache_cleared": "Cache cleared"
 }

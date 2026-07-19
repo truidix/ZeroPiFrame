@@ -73,9 +73,22 @@ if [[ "$SLIDESHOW_WAS_ACTIVE" -eq 1 ]]; then
         apt-get install -y --no-install-recommends fbi \
             > /tmp/photoframe-fbi-install.log 2>&1 || true
     fi
+    # Pick the notice image matching the configured UI language, falling
+    # back to English if config.yaml doesn't exist yet, has no 'language'
+    # key, or there's no dedicated image for that language (e.g. a language
+    # was added to the web UI but nobody has regenerated the placeholder
+    # images for it yet via tools/generate_placeholder.py).
+    NOTICE_LANG="en"
+    if [[ -f /opt/photoframe/config.yaml ]]; then
+        CONFIGURED_LANG="$(grep -m1 '^language:' /opt/photoframe/config.yaml 2>/dev/null \
+            | sed -E "s/^language:[[:space:]]*[\"']?([A-Za-z_-]+)[\"']?.*/\1/")"
+        [[ -n "$CONFIGURED_LANG" ]] && NOTICE_LANG="$CONFIGURED_LANG"
+    fi
+    NOTICE_IMAGE="$SCRIPT_DIR/assets/update-please-wait-$NOTICE_LANG.png"
+    [[ -f "$NOTICE_IMAGE" ]] || NOTICE_IMAGE="$SCRIPT_DIR/assets/update-please-wait.png"
     if command -v fbi &>/dev/null && [[ -e /dev/fb0 ]]; then
         fbi -T 1 -d /dev/fb0 -a --noverbose \
-            "$SCRIPT_DIR/assets/update-please-wait.png" \
+            "$NOTICE_IMAGE" \
             < /dev/null > /tmp/photoframe-fbi.log 2>&1 &
         FBI_PID=$!
         disown "$FBI_PID" 2>/dev/null || true
