@@ -5,6 +5,7 @@ Erreichbar unter http://photoframe.local:8080
 """
 
 import os
+import re
 import sys
 import subprocess
 import logging
@@ -54,15 +55,45 @@ def get_service_status(name: str) -> str:
     return r.stdout.strip()
 
 
-def get_last_sync() -> str:
+def is_service_enabled(name: str) -> bool:
+    """True wenn der Dienst/Timer beim Boot automatisch startet.
+
+    Genutzt um den Auto-Sync-Umschalter im Web-UI korrekt darzustellen,
+    unabhängig davon ob der Timer gerade zufällig aktiv/inaktiv ist.
+    """
+    r = subprocess.run(['systemctl', 'is-enabled', name],
+                       capture_output=True, text=True)
+    return r.stdout.strip() == 'enabled'
+
+
+# Beispielzeile aus sync.py:
+# 2026-07-19 18:26:58,543 [sync] INFO: Sync abgeschlossen in 0.1s – +0 neu, -0 gelöscht, 0 unverändert
+_LAST_SYNC_RE = re.compile(
+    r'^(?P<ts>[\d-]+ [\d:]+),\d+ \[sync\] INFO: Sync abgeschlossen in '
+    r'(?P<duration>[\d.]+)s – \+(?P<added>\d+) neu, -(?P<removed>\d+) gelöscht, '
+    r'(?P<skipped>\d+) unverändert'
+)
+
+
+def get_last_sync() -> dict | None:
+    """Liest die letzte 'Sync abgeschlossen'-Zeile und gibt Zeitstempel,
+    Dauer sowie neu/gelöscht/unverändert-Zähler strukturiert zurück
+    (statt wie vorher nur den rohen Zeitstempel-String)."""
     try:
         lines = LOG_FILE.read_text().splitlines()
         for line in reversed(lines):
-            if 'Sync abgeschlossen' in line:
-                return line.split('[sync]')[0].strip()
-        return 'Noch kein Sync'
+            m = _LAST_SYNC_RE.match(line)
+            if m:
+                return {
+                    'timestamp': m.group('ts'),
+                    'duration':  float(m.group('duration')),
+                    'added':     int(m.group('added')),
+                    'removed':   int(m.group('removed')),
+                    'skipped':   int(m.group('skipped')),
+                }
+        return None
     except Exception:
-        return 'Unbekannt'
+        return None
 
 
 def get_next_sync() -> str:
@@ -88,6 +119,9 @@ def index():
     slide_status = get_service_status('photoframe-slideshow')
     sync_status  = get_service_status('photoframe-sync')
     timer_status = get_service_status('photoframe-sync.timer')
+    sync_running = sync_status in ('active', 'activating')
+    sync_enabled = is_service_enabled('photoframe-sync.timer')
+    slideshow_enabled = is_service_enabled('photoframe-slideshow')
 
     try:
         n_images = len(cached_files())
@@ -101,6 +135,9 @@ def index():
         slide_status=slide_status,
         sync_status=sync_status,
         timer_status=timer_status,
+        sync_running=sync_running,
+        sync_enabled=sync_enabled,
+        slideshow_enabled=slideshow_enabled,
         n_images=n_images,
         size_gb=f'{size_gb:.2f}',
         last_sync=get_last_sync(),
@@ -126,6 +163,7 @@ def sources():
         cfg['nextcloud']['verify_ssl'] = 'nc_verify_ssl' in data
         folders = [f.strip() for f in data.get('nc_folders', '').split('\n') if f.strip()]
         cfg['nextcloud']['folders']    = folders
+        cfg['nextcloud']['min_resolution_px'] = int(data.get('nc_min_res', 0) or 0)
 
         # Immich
         cfg.setdefault('immich', {})
@@ -135,6 +173,7 @@ def sources():
         albums = [a.strip() for a in data.get('im_albums', '').split('\n') if a.strip()]
         cfg['immich']['albums']      = albums
         cfg['immich']['all_photos']  = not albums
+        cfg['immich']['min_resolution_px'] = int(data.get('im_min_res', 0) or 0)
 
         save_config(cfg)
         return redirect(url_for('sources') + '?saved=1')
@@ -153,7 +192,12 @@ def slideshow():
         sl = cfg['slideshow']
 
         sl['interval_seconds']      = int(data.get('interval', 30))
-        sl['transition']            = data.get('transition', 'ken_burns')
+        enabled = data.getlist('enabled_transitions')
+        # Absicherung falls im Formular versehentlich alle abgewählt wurden
+        # (kann bei JS-Fehlern/deaktiviertem JS passieren): Fallback statt
+        # eine Slideshow ganz ohne Übergang zu speichern.
+        sl['enabled_transitions']    = enabled or ['ken_burns']
+        sl['transition']             = sl['enabled_transitions'][0]  # Altfeld, Rückwärtskompatibilität
         sl['transition_duration_ms'] = int(data.get('t_duration', 1500))
         sl['ken_burns_zoom']        = float(data.get('kb_zoom', 0.08))
         sl['shuffle']               = data.get('order') == 'shuffle'
@@ -185,10 +229,17 @@ def display():
         cfg['sync']['max_cache_size_gb']  = float(data.get('max_cache', 5))
         cfg['sync']['delete_removed']     = 'delete_removed' in data
 
+        shutdown_enabled = 'shutdown_enabled' in data
+        cfg['display']['shutdown_time'] = data.get('shutdown_time', '22:55') if shutdown_enabled else ''
+
         save_config(cfg)
 
-        # HDMI-Zeitplan via systemd-Timer aktualisieren
+        # HDMI-Zeitplan, Auto-Shutdown und Sync-Intervall via systemd-Timer
+        # aktualisieren – ohne das hätte das Ändern dieser Felder im Web-UI
+        # keinen Effekt auf die tatsächlich laufenden Timer.
         _update_hdmi_timers(cfg)
+        _update_shutdown_timer(cfg)
+        _update_sync_interval(cfg)
 
         return redirect(url_for('display') + '?saved=1')
 
@@ -224,13 +275,89 @@ def api_test_connection():
 
 @app.route('/api/sync_now', methods=['POST'])
 def api_sync_now():
+    # webui.py läuft absichtlich unprivilegiert; das Starten eines anderen
+    # System-Dienstes braucht root. Ohne interaktive Sitzung kann PolicyKit
+    # nicht nach einem Passwort fragen ("Interactive authentication
+    # required"), daher über die eng begrenzte sudoers-Regel aus install.sh.
     result = subprocess.run(
-        ['systemctl', 'start', 'photoframe-sync'],
+        ['sudo', 'systemctl', 'start', 'photoframe-sync'],
         capture_output=True, text=True
     )
     if result.returncode == 0:
         return jsonify({'ok': True, 'message': 'Sync gestartet'})
     return jsonify({'ok': False, 'message': result.stderr})
+
+
+@app.route('/api/sync_stop', methods=['POST'])
+def api_sync_stop():
+    # Bricht einen gerade laufenden Sync-Lauf ab. Da photoframe-sync ein
+    # Type=oneshot-Dienst ist, beendet "systemctl stop" den laufenden
+    # Python-Prozess (SIGTERM) sauber, ohne den Timer selbst anzufassen –
+    # der nächste geplante Sync läuft ganz normal weiter.
+    result = subprocess.run(
+        ['sudo', 'systemctl', 'stop', 'photoframe-sync'],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        return jsonify({'ok': True, 'message': 'Sync gestoppt'})
+    return jsonify({'ok': False, 'message': result.stderr})
+
+
+@app.route('/api/sync_toggle', methods=['POST'])
+def api_sync_toggle():
+    """Aktiviert/deaktiviert den zeitgesteuerten Auto-Sync dauerhaft
+    (überlebt einen Reboot). Der manuelle "Sync jetzt"-Button funktioniert
+    unabhängig davon immer weiter."""
+    enabled = bool(request.get_json(silent=True) and request.get_json().get('enabled'))
+    action  = 'enable' if enabled else 'disable'
+    result = subprocess.run(
+        ['sudo', '/opt/photoframe/apply-sync-enabled.sh', action],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return jsonify({'ok': False, 'message': result.stderr.strip()})
+    return jsonify({'ok': True,
+                    'message': 'Auto-Sync aktiviert' if enabled else 'Auto-Sync deaktiviert'})
+
+
+@app.route('/api/slideshow_start', methods=['POST'])
+def api_slideshow_start():
+    result = subprocess.run(
+        ['sudo', 'systemctl', 'start', 'photoframe-slideshow'],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        return jsonify({'ok': True, 'message': 'Slideshow gestartet'})
+    return jsonify({'ok': False, 'message': result.stderr})
+
+
+@app.route('/api/slideshow_stop', methods=['POST'])
+def api_slideshow_stop():
+    result = subprocess.run(
+        ['sudo', 'systemctl', 'stop', 'photoframe-slideshow'],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        return jsonify({'ok': True, 'message': 'Slideshow gestoppt'})
+    return jsonify({'ok': False, 'message': result.stderr})
+
+
+@app.route('/api/slideshow_toggle', methods=['POST'])
+def api_slideshow_toggle():
+    """Aktiviert/deaktiviert den Slideshow-Dienst dauerhaft (überlebt einen
+    Reboot) – analog zum Auto-Sync-Umschalter. "enable --now"/"disable --now"
+    wirkt zusätzlich sofort auf den aktuell laufenden Prozess, die separaten
+    Start/Stopp-Buttons für den aktuellen Lauf funktionieren davon
+    unabhängig weiter."""
+    enabled = bool(request.get_json(silent=True) and request.get_json().get('enabled'))
+    result = subprocess.run(
+        ['sudo', 'systemctl', 'enable' if enabled else 'disable', '--now', 'photoframe-slideshow'],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return jsonify({'ok': False, 'message': result.stderr.strip()})
+    return jsonify({'ok': True,
+                    'message': 'Slideshow aktiviert' if enabled else 'Slideshow deaktiviert'})
 
 
 @app.route('/api/display_power', methods=['POST'])
@@ -241,9 +368,32 @@ def api_display_power():
     return jsonify({'ok': True})
 
 
+@app.route('/api/shutdown', methods=['POST'])
+def api_shutdown():
+    """Für externe Trigger (z.B. Home Assistant rest_command vor dem
+    Abschalten einer Smart-Plug-Steckdose).
+
+    Reihenfolge ist bewusst: HDMI zuerst aus (sofort, keine root-Rechte
+    nötig – $FRAME_USER ist in der video-Gruppe), danach erst das geordnete
+    Herunterfahren einleiten. Die Antwort kommt zurück sobald poweroff
+    eingeleitet ist – der eigentliche Shutdown läuft im Hintergrund weiter.
+    Der Aufrufer (z.B. eine HA-Automation) sollte danach noch ca. 20-30s
+    warten, bevor er die Steckdose tatsächlich abschaltet.
+    """
+    subprocess.run(['vcgencmd', 'display_power', '0'], capture_output=True)
+
+    result = subprocess.run(['sudo', 'systemctl', 'poweroff'],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        log.error(f'Shutdown fehlgeschlagen: {result.stderr.strip()}')
+        return jsonify({'ok': False, 'message': result.stderr.strip()})
+
+    return jsonify({'ok': True, 'message': 'HDMI aus, Herunterfahren eingeleitet'})
+
+
 @app.route('/api/restart_slideshow', methods=['POST'])
 def api_restart_slideshow():
-    subprocess.run(['systemctl', 'restart', 'photoframe-slideshow'],
+    subprocess.run(['sudo', 'systemctl', 'restart', 'photoframe-slideshow'],
                    capture_output=True)
     return jsonify({'ok': True})
 
@@ -268,9 +418,19 @@ def api_status():
         n_images = 0
         size_gb  = 0.0
 
+    # photoframe-sync ist ein Type=oneshot ohne RemainAfterExit: während des
+    # Laufs meldet systemd "activating", danach sofort "inactive" (nie
+    # dauerhaft "active" wie bei einem Dauer-Dienst). Beide möglichen
+    # "läuft gerade"-Zustände abdecken.
+    sync_state   = get_service_status('photoframe-sync')
+    sync_running = sync_state in ('active', 'activating')
+
     return jsonify({
         'slideshow': get_service_status('photoframe-slideshow'),
         'sync_timer': get_service_status('photoframe-sync.timer'),
+        'sync_running': sync_running,
+        'sync_enabled': is_service_enabled('photoframe-sync.timer'),
+        'slideshow_enabled': is_service_enabled('photoframe-slideshow'),
         'n_images': n_images,
         'size_gb': round(size_gb, 2),
         'last_sync': get_last_sync(),
@@ -281,47 +441,65 @@ def api_status():
 # ---------------------------------------------------------------------------
 
 def _update_hdmi_timers(cfg: dict):
-    """Schreibt systemd-Timer für HDMI-Zeitplan."""
+    """Wendet den HDMI-Zeitplan an (oder deaktiviert ihn).
+
+    webui.py läuft unprivilegiert und darf/kann nicht selbst nach
+    /etc/systemd/system/ schreiben. Stattdessen wird das root-Helper-Skript
+    aus install.sh über die dafür eingerichtete sudoers-Regel aufgerufen –
+    das Skript validiert die Zeit-Strings selbst, bevor es irgendetwas
+    anfasst.
+    """
     on_time  = cfg.get('display', {}).get('on_time', '')
     off_time = cfg.get('display', {}).get('off_time', '')
+    script   = '/opt/photoframe/apply-hdmi-schedule.sh'
 
     if not on_time or not off_time:
-        subprocess.run(['systemctl', 'disable', 'photoframe-hdmi-on.timer'],
-                       capture_output=True)
-        subprocess.run(['systemctl', 'disable', 'photoframe-hdmi-off.timer'],
-                       capture_output=True)
+        subprocess.run(['sudo', script, 'disable'], capture_output=True)
         return
 
-    on_h,  on_m  = on_time.split(':')
-    off_h, off_m = off_time.split(':')
+    result = subprocess.run(['sudo', script, on_time, off_time],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        log.error(f'HDMI-Zeitplan konnte nicht gesetzt werden: {result.stderr.strip()}')
 
-    for name, h, m, cmd in [
-        ('photoframe-hdmi-on',  on_h,  on_m,  'display_power 1'),
-        ('photoframe-hdmi-off', off_h, off_m, 'display_power 0'),
-    ]:
-        timer_content = f"""[Unit]
-Description=Photoframe HDMI {name.split('-')[-1]}
 
-[Timer]
-OnCalendar=*-*-* {h}:{m}:00
-Persistent=true
+def _update_shutdown_timer(cfg: dict):
+    """Setzt (oder deaktiviert) den Auto-Shutdown-Zeitpunkt.
 
-[Install]
-WantedBy=timers.target
-"""
-        service_content = f"""[Unit]
-Description=Photoframe HDMI {name.split('-')[-1]}
+    Gedacht für Betrieb an einer Zeitschaltuhr/Smart-Plug ohne geordnetes
+    Herunterfahren: der Pi fährt sich selbst kurz VOR der geplanten
+    Abschaltzeit der Steckdose sauber herunter, statt dass der Strom roh
+    gekappt wird (Risiko für SD-Karten-Korruption). Läuft wie der
+    HDMI-Zeitplan über ein root-Helper-Skript via sudo.
+    """
+    shutdown_time = cfg.get('display', {}).get('shutdown_time', '')
+    script = '/opt/photoframe/apply-shutdown-schedule.sh'
 
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/vcgencmd {cmd}
-"""
-        Path(f'/etc/systemd/system/{name}.timer').write_text(timer_content)
-        Path(f'/etc/systemd/system/{name}.service').write_text(service_content)
+    if not shutdown_time:
+        subprocess.run(['sudo', script, 'disable'], capture_output=True)
+        return
 
-    subprocess.run(['systemctl', 'daemon-reload'], capture_output=True)
-    for name in ['photoframe-hdmi-on.timer', 'photoframe-hdmi-off.timer']:
-        subprocess.run(['systemctl', 'enable', '--now', name], capture_output=True)
+    result = subprocess.run(['sudo', script, shutdown_time],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        log.error(f'Auto-Shutdown konnte nicht gesetzt werden: {result.stderr.strip()}')
+
+
+def _update_sync_interval(cfg: dict):
+    """Wendet das konfigurierte Sync-Intervall auf photoframe-sync.timer an.
+
+    Ohne diesen Aufruf würde das Feld "Sync-Intervall" im Web-UI nur in
+    config.yaml landen, aber nie tatsächlich den laufenden systemd-Timer
+    beeinflussen (der wurde bei der Installation einmalig mit einem festen
+    Wert angelegt).
+    """
+    minutes = cfg.get('sync', {}).get('interval_minutes', 60)
+    script  = '/opt/photoframe/apply-sync-interval.sh'
+
+    result = subprocess.run(['sudo', script, str(minutes)],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        log.error(f'Sync-Intervall konnte nicht gesetzt werden: {result.stderr.strip()}')
 
 
 # ---------------------------------------------------------------------------

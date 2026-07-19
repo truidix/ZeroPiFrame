@@ -36,21 +36,96 @@ BOOT_DIR="/boot/firmware"
 info "Boot-Verzeichnis: $BOOT_DIR"
 
 # ---------------------------------------------------------------------------
-info "1/9 System-Pakete installieren"
+info "0/10 Laufende Photoframe-Dienste pausieren"
+# ---------------------------------------------------------------------------
+# Der Zero 2 W hat wenig Reserve: apt/pip/venv-Arbeit während gleichzeitig
+# die Slideshow (pygame/KMSDRM + Pillow-Decodes, hält zudem die
+# Display-Hoheit) und/oder ein Sync (Downloads, Bildverarbeitung) laufen,
+# macht die Installation spürbar langsamer und lässt den Pi "hängen"
+# wirken. Falls das hier eine erneute Installation/ein Update auf einem
+# bereits laufenden Photoframe ist, werden die Dienste daher zuerst
+# gestoppt – Schritt 10/10 am Ende aktiviert und startet sie unabhängig
+# davon ohnehin wieder, das hier ist rein für die Dauer der Installation.
+# Bei einer frischen Erstinstallation existieren die Units noch nicht,
+# "is-active" ist dann einfach false und es passiert nichts.
+SLIDESHOW_WAS_ACTIVE=0
+for svc in photoframe-slideshow photoframe-sync.timer photoframe-sync photoframe-webui; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+        info "Stoppe $svc für die Dauer der Installation"
+        [[ "$svc" == "photoframe-slideshow" ]] && SLIDESHOW_WAS_ACTIVE=1
+        systemctl stop "$svc" 2>/dev/null || true
+    fi
+done
+
+# ---------------------------------------------------------------------------
+info "0b/10 Hinweisbild während der Installation anzeigen"
+# ---------------------------------------------------------------------------
+# Nur relevant, wenn die Slideshow oben gerade lief (sonst war der Bildschirm
+# schon vorher schwarz/Konsole – nichts zu "ersetzen"). `fbi` ist ein
+# winziger Framebuffer-Bildbetrachter (ein einzelnes Bild, kein Rendering,
+# keine Animation) – deutlich weniger RAM/CPU als die volle
+# pygame/Slideshow-Instanz, aber verhindert trotzdem, dass der Bildschirm
+# während der (teils mehrminütigen) Installation einfach schwarz bleibt
+# oder die Text-Konsole zeigt.
+FBI_PID=""
+if [[ "$SLIDESHOW_WAS_ACTIVE" -eq 1 ]]; then
+    if ! command -v fbi &>/dev/null; then
+        apt-get install -y --no-install-recommends fbi \
+            > /tmp/photoframe-fbi-install.log 2>&1 || true
+    fi
+    if command -v fbi &>/dev/null && [[ -e /dev/fb0 ]]; then
+        fbi -T 1 -d /dev/fb0 -a --noverbose \
+            "$SCRIPT_DIR/assets/update-please-wait.png" \
+            < /dev/null > /tmp/photoframe-fbi.log 2>&1 &
+        FBI_PID=$!
+        disown "$FBI_PID" 2>/dev/null || true
+        info "Hinweisbild wird angezeigt (PID $FBI_PID)"
+        # Sicherheitsnetz: falls das Skript vorzeitig abbricht (set -e bei
+        # einem Fehler in einem späteren Schritt), soll das Hinweisbild
+        # trotzdem nicht für immer stehen bleiben und einen erfolgreichen
+        # Abschluss vortäuschen, der nie stattgefunden hat.
+        trap '[[ -n "$FBI_PID" ]] && kill "$FBI_PID" 2>/dev/null || true' EXIT
+    else
+        warn "fbi/Framebuffer nicht verfügbar – kein Hinweisbild während der Installation"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+info "1/10 System-Pakete installieren"
 # ---------------------------------------------------------------------------
 apt-get update -qq
+
 apt-get install -y \
     python3 python3-pip python3-venv \
     python3-pygame \
     python3-yaml \
-    libraspberrypi-bin \
     mpv \
     iw \
     git curl avahi-daemon \
     --no-install-recommends
 
+# vcgencmd (HDMI display_power on/off, used by the display schedule) shipped
+# in libraspberrypi-bin on Bookworm; on Trixie that package was split into
+# raspi-utils-core / raspi-utils-dt.
+#
+# `apt-cache show libraspberrypi-bin` still prints a stanza for the renamed
+# package even though it has no installable candidate on Trixie, so a
+# pre-check against apt-cache is unreliable. Instead we just attempt the
+# install and fall back on failure (the `if` condition shields this from
+# the script's `set -e`, so a failed first attempt doesn't abort the script).
+if apt-get install -y --no-install-recommends libraspberrypi-bin \
+       > /tmp/photoframe-vcgencmd-install.log 2>&1; then
+    info "vcgencmd-Paket: libraspberrypi-bin"
+else
+    info "libraspberrypi-bin nicht installierbar (Trixie) – installiere raspi-utils-core/raspi-utils-dt"
+    apt-get install -y --no-install-recommends raspi-utils-core raspi-utils-dt
+fi
+
+command -v vcgencmd &>/dev/null || \
+    warn "vcgencmd nicht gefunden – HDMI-Zeitplan (An/Aus) wird nicht funktionieren"
+
 # ---------------------------------------------------------------------------
-info "2/9 Dateien installieren"
+info "2/10 Dateien installieren"
 # ---------------------------------------------------------------------------
 mkdir -p "$INSTALL_DIR/templates" "$INSTALL_DIR/static" "$CACHE_DIR"
 
@@ -65,7 +140,7 @@ touch "$INSTALL_DIR/static/placeholder.png"
 chmod -R 755 "$INSTALL_DIR"
 
 # ---------------------------------------------------------------------------
-info "3/9 Python virtualenv einrichten (Trixie / PEP 668)"
+info "3/10 Python virtualenv einrichten (Trixie / PEP 668)"
 # ---------------------------------------------------------------------------
 # pygame und PyYAML kommen als System-Paket (apt), Rest via pip in venv.
 # --system-site-packages macht System-Pakete (pygame) im venv sichtbar.
@@ -81,7 +156,7 @@ python3 -m venv --system-site-packages "$VENV_DIR"
 info "virtualenv: $VENV_DIR"
 
 # ---------------------------------------------------------------------------
-info "4/9 Konfiguration anlegen"
+info "4/10 Konfiguration anlegen"
 # ---------------------------------------------------------------------------
 if [[ ! -f "$INSTALL_DIR/config.yaml" ]]; then
     cp "$(dirname "$0")/config.yaml.example" "$INSTALL_DIR/config.yaml"
@@ -92,7 +167,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-info "5/9 Benutzer-Berechtigungen setzen"
+info "5/10 Benutzer-Berechtigungen setzen"
 # ---------------------------------------------------------------------------
 usermod -aG video,render "$FRAME_USER" 2>/dev/null || true
 
@@ -101,9 +176,11 @@ chown -R "$FRAME_USER:$FRAME_USER" "$INSTALL_DIR"
 
 touch "$LOG_DIR/photoframe-sync.log"
 chown "$FRAME_USER:$FRAME_USER" "$LOG_DIR/photoframe-sync.log"
+touch "$LOG_DIR/photoframe-slideshow.log"
+chown "$FRAME_USER:$FRAME_USER" "$LOG_DIR/photoframe-slideshow.log"
 
 # ---------------------------------------------------------------------------
-info "6/9 Konsole / Framebuffer konfigurieren"
+info "6/10 Konsole / Framebuffer konfigurieren"
 # ---------------------------------------------------------------------------
 systemctl disable getty@tty1 2>/dev/null || true
 
@@ -134,7 +211,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-info "7/9 Swap & WLAN-Energiesparmodus (512 MB RAM sind knapp)"
+info "7/10 Swap & WLAN-Energiesparmodus (512 MB RAM sind knapp)"
 # ---------------------------------------------------------------------------
 # Pillow-Decode großer Fotos + pygame + Flask + gelegentlich mpv nebeneinander
 # können sich auf einem Zero 2 W mit 512 MB RAM eng werden. Etwas Swap als
@@ -169,7 +246,7 @@ systemctl enable --now photoframe-wifi-powersave-off 2>/dev/null || \
     warn "WLAN-Powersave konnte nicht deaktiviert werden (kein wlan0? per USB-LAN o.ä.?)"
 
 # ---------------------------------------------------------------------------
-info "8/9 systemd-Dienste einrichten"
+info "8/10 systemd-Dienste einrichten"
 # ---------------------------------------------------------------------------
 PYTHON="$VENV_DIR/bin/python3"
 
@@ -187,6 +264,8 @@ Environment="SDL_VIDEO_KMSDRM_DEVICE=/dev/dri/card0"
 Environment="SDL_AUDIODRIVER=dummy"
 ExecStartPre=/bin/sleep 3
 ExecStart=$PYTHON $INSTALL_DIR/slideshow.py
+StandardOutput=append:$LOG_DIR/photoframe-slideshow.log
+StandardError=append:$LOG_DIR/photoframe-slideshow.log
 Restart=always
 RestartSec=5
 # Höhere Priorität als Sync/Web-UI: die Slideshow soll auch dann flüssig
@@ -248,17 +327,285 @@ WantedBy=multi-user.target
 EOF
 
 # ---------------------------------------------------------------------------
-info "9/9 Dienste aktivieren"
+info "9/10 Sudo-Rechte für die Web-UI einrichten"
+# ---------------------------------------------------------------------------
+# photoframe-webui.service läuft absichtlich unprivilegiert als $FRAME_USER.
+# Aber "Sync jetzt" und "Slideshow neu starten" im Web-UI rufen intern
+# `systemctl start/restart` auf einen anderen System-Dienst auf – das
+# verlangt normalerweise root, und da hier keine interaktive Desktop-Sitzung
+# existiert, kann PolicyKit nicht nach einem Passwort fragen und lehnt sofort
+# mit "Interactive authentication required" ab. Eine eng begrenzte
+# sudoers-Regel für genau diese Befehle behebt das, ohne dem Web-UI-Prozess
+# generell root-Rechte zu geben.
+#
+# Für den HDMI-Zeitplan (Display-Einstellungen) gilt dasselbe zusätzlich für
+# das Schreiben der Timer-Unit-Dateien nach /etc/systemd/system/ – dafür
+# gibt es ein eigenes root-Helper-Skript, das die Web-UI ebenfalls nur über
+# sudo aufrufen darf.
+
+cat > "$INSTALL_DIR/apply-hdmi-schedule.sh" << 'EOF'
+#!/bin/bash
+# Setzt (oder deaktiviert) den HDMI-Ein/Aus-Zeitplan. Läuft als root (via
+# sudo, siehe /etc/sudoers.d/photoframe) - validiert seine Eingaben daher
+# defensiv, bevor irgendetwas nach /etc/systemd/system/ geschrieben wird.
+#
+# Verwendung:
+#   apply-hdmi-schedule.sh HH:MM HH:MM   (Einschaltzeit, Ausschaltzeit)
+#   apply-hdmi-schedule.sh disable
+set -euo pipefail
+
+TIME_RE='^([01][0-9]|2[0-3]):[0-5][0-9]$'
+
+if [[ "${1:-}" == "disable" ]]; then
+    systemctl disable --now photoframe-hdmi-on.timer photoframe-hdmi-off.timer 2>/dev/null || true
+    exit 0
+fi
+
+ON_TIME="${1:-}"
+OFF_TIME="${2:-}"
+
+[[ "$ON_TIME"  =~ $TIME_RE ]] || { echo "Ungültige Einschaltzeit: $ON_TIME" >&2; exit 1; }
+[[ "$OFF_TIME" =~ $TIME_RE ]] || { echo "Ungültige Ausschaltzeit: $OFF_TIME" >&2; exit 1; }
+
+ON_H="${ON_TIME%%:*}";   ON_M="${ON_TIME##*:}"
+OFF_H="${OFF_TIME%%:*}"; OFF_M="${OFF_TIME##*:}"
+
+write_unit() {
+    local label="$1" hh="$2" mm="$3" power="$4"
+    local name="photoframe-hdmi-${label}"
+    cat > "/etc/systemd/system/${name}.timer" << TIMER
+[Unit]
+Description=Photoframe HDMI ${label}
+
+[Timer]
+OnCalendar=*-*-* ${hh}:${mm}:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+    cat > "/etc/systemd/system/${name}.service" << SERVICE
+[Unit]
+Description=Photoframe HDMI ${label}
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/vcgencmd display_power ${power}
+SERVICE
+}
+
+write_unit "on"  "$ON_H"  "$ON_M"  1
+write_unit "off" "$OFF_H" "$OFF_M" 0
+
+systemctl daemon-reload
+systemctl enable --now photoframe-hdmi-on.timer photoframe-hdmi-off.timer
+EOF
+chown root:root "$INSTALL_DIR/apply-hdmi-schedule.sh"
+chmod 700 "$INSTALL_DIR/apply-hdmi-schedule.sh"
+
+# Auto-Shutdown-Zeitplan: für Betrieb an einer Zeitschaltuhr/Smart-Plug ohne
+# geordnetes Herunterfahren. Statt den Strom roh zu kappen (Risiko für
+# SD-Karten-Korruption bei jedem Aus), fährt der Pi sich selbst ein paar
+# Minuten VOR der geplanten Abschaltzeit der Steckdose sauber herunter.
+# Wichtig: Persistent=false (Standard) – sonst würde der Timer beim
+# nächsten Boot denken, die verpasste Ausführung nachholen zu müssen, und
+# sofort wieder herunterfahren.
+cat > "$INSTALL_DIR/apply-shutdown-schedule.sh" << 'EOF'
+#!/bin/bash
+# Setzt (oder deaktiviert) den automatischen Shutdown-Zeitpunkt.
+# Läuft als root (via sudo, siehe /etc/sudoers.d/photoframe).
+#
+# Verwendung:
+#   apply-shutdown-schedule.sh HH:MM
+#   apply-shutdown-schedule.sh disable
+set -euo pipefail
+
+TIME_RE='^([01][0-9]|2[0-3]):[0-5][0-9]$'
+
+if [[ "${1:-}" == "disable" ]]; then
+    systemctl disable --now photoframe-shutdown.timer 2>/dev/null || true
+    exit 0
+fi
+
+SHUTDOWN_TIME="${1:-}"
+[[ "$SHUTDOWN_TIME" =~ $TIME_RE ]] || { echo "Ungültige Zeit: $SHUTDOWN_TIME" >&2; exit 1; }
+H="${SHUTDOWN_TIME%%:*}"; M="${SHUTDOWN_TIME##*:}"
+
+cat > /etc/systemd/system/photoframe-shutdown.timer << TIMER
+[Unit]
+Description=Photoframe Auto-Shutdown
+
+[Timer]
+OnCalendar=*-*-* ${H}:${M}:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+cat > /etc/systemd/system/photoframe-shutdown.service << 'SERVICE'
+[Unit]
+Description=Photoframe Auto-Shutdown
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/poweroff
+SERVICE
+
+systemctl daemon-reload
+systemctl enable --now photoframe-shutdown.timer
+EOF
+chown root:root "$INSTALL_DIR/apply-shutdown-schedule.sh"
+chmod 700 "$INSTALL_DIR/apply-shutdown-schedule.sh"
+
+# Sync-Intervall: photoframe-sync.timer wird oben mit einem festen
+# OnUnitActiveSec=60min angelegt. Das Web-UI-Feld "Sync-Intervall" schreibt
+# nur nach config.yaml – ohne dieses Helper-Skript hätte das Ändern des
+# Wertes im Web-UI keinerlei Effekt auf den tatsächlichen Timer.
+cat > "$INSTALL_DIR/apply-sync-interval.sh" << 'EOF'
+#!/bin/bash
+# Setzt das Sync-Intervall des photoframe-sync.timer.
+# Läuft als root (via sudo, siehe /etc/sudoers.d/photoframe).
+#
+# Verwendung: apply-sync-interval.sh <Minuten>
+set -euo pipefail
+
+MINUTES="${1:-}"
+[[ "$MINUTES" =~ ^[0-9]+$ ]] || { echo "Ungültiges Intervall: $MINUTES" >&2; exit 1; }
+(( MINUTES >= 5 && MINUTES <= 1440 )) || { echo "Intervall muss zwischen 5 und 1440 Minuten liegen" >&2; exit 1; }
+
+cat > /etc/systemd/system/photoframe-sync.timer << TIMER
+[Unit]
+Description=Photoframe Sync Timer
+
+[Timer]
+OnBootSec=30sec
+OnUnitActiveSec=${MINUTES}min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+systemctl daemon-reload
+# restart statt reload: die neue OnUnitActiveSec-Periode soll sofort ab
+# jetzt neu berechnet werden, statt erst nach Ablauf der alten Periode.
+systemctl restart photoframe-sync.timer
+EOF
+chown root:root "$INSTALL_DIR/apply-sync-interval.sh"
+chmod 700 "$INSTALL_DIR/apply-sync-interval.sh"
+
+# Aktiviert/deaktiviert den zeitgesteuerten Auto-Sync dauerhaft (überlebt
+# einen Reboot) – anders als ein bloßes "systemctl stop", das den Timer nur
+# bis zum nächsten Boot pausieren würde, da er weiterhin enabled bliebe.
+cat > "$INSTALL_DIR/apply-sync-enabled.sh" << 'EOF'
+#!/bin/bash
+# Aktiviert/deaktiviert den automatischen (zeitgesteuerten) Sync dauerhaft.
+# Läuft als root (via sudo, siehe /etc/sudoers.d/photoframe).
+#
+# Verwendung: apply-sync-enabled.sh enable|disable
+set -euo pipefail
+
+ACTION="${1:-}"
+case "$ACTION" in
+  enable)
+    systemctl enable --now photoframe-sync.timer
+    ;;
+  disable)
+    systemctl disable --now photoframe-sync.timer
+    ;;
+  *)
+    echo "Verwendung: apply-sync-enabled.sh enable|disable" >&2
+    exit 1
+    ;;
+esac
+EOF
+chown root:root "$INSTALL_DIR/apply-sync-enabled.sh"
+chmod 700 "$INSTALL_DIR/apply-sync-enabled.sh"
+
+cat > /etc/sudoers.d/photoframe << EOF
+# Erzeugt von install.sh – nur die konkreten Befehle, die photoframe-webui.service
+# (läuft als $FRAME_USER) für "Sync jetzt/stoppen", "Slideshow starten/stoppen/neu
+# starten", den HDMI-Zeitplan, den Auto-Shutdown-Zeitplan und das Ein-/Ausschalten
+# des Auto-Sync-Timers benötigt. Keine generelle sudo/root-Freigabe.
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start photoframe-sync
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl stop photoframe-sync
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start photoframe-slideshow
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl stop photoframe-slideshow
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart photoframe-slideshow
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl enable --now photoframe-slideshow
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl disable --now photoframe-slideshow
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
+$FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-hdmi-schedule.sh *
+$FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-shutdown-schedule.sh *
+$FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-sync-interval.sh *
+$FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-sync-enabled.sh *
+EOF
+chmod 440 /etc/sudoers.d/photoframe
+visudo -c -f /etc/sudoers.d/photoframe || error "sudoers-Datei ungültig – bitte /etc/sudoers.d/photoframe prüfen"
+info "sudoers-Regel angelegt: /etc/sudoers.d/photoframe"
+
+# ---------------------------------------------------------------------------
+info "10/10 Dienste aktivieren"
 # ---------------------------------------------------------------------------
 systemctl daemon-reload
 systemctl enable photoframe-slideshow photoframe-sync.timer photoframe-webui
-systemctl start  photoframe-sync.timer photoframe-webui
+# restart statt start: bringt sowohl frisch installierte als auch (Schritt
+# 0/10) für die Installation pausierte Dienste zuverlässig wieder hoch –
+# und sorgt bei einer erneuten Installation (z.B. um einen Fix einzuspielen)
+# dafür, dass bereits laufende Dienste den neuen Code auch tatsächlich
+# übernehmen, statt unverändert weiterzulaufen.
+systemctl restart photoframe-sync.timer photoframe-webui
 
-if grep -q "DEIN_API_KEY\|mein_passwort" "$INSTALL_DIR/config.yaml" 2>/dev/null; then
-    warn "Config noch nicht ausgefüllt – Slideshow startet nach dem Ausfüllen:"
-    warn "  sudo systemctl start photoframe-slideshow"
+# Hinweisbild (falls in Schritt 0b gestartet) erst jetzt beenden – möglichst
+# knapp bevor die echte Slideshow die Display-Hoheit zurückbekommt, damit
+# der Bildschirm so kurz wie möglich dazwischen leer/Konsole zeigt.
+if [[ -n "$FBI_PID" ]] && kill -0 "$FBI_PID" 2>/dev/null; then
+    kill "$FBI_PID" 2>/dev/null || true
+    wait "$FBI_PID" 2>/dev/null || true
+fi
+
+# Prüft NUR die Felder der aktuell aktiven Quelle (source: nextcloud/immich)
+# auf Platzhalterwerte – ein einfaches grep über die ganze Datei (frühere
+# Version) schlug fälschlich an, sobald irgendwo im File noch ein
+# Platzhalter stand, selbst in der GERADE NICHT verwendeten Quelle (z.B.
+# Immich konfiguriert und funktionsfähig, aber der ungenutzte
+# Nextcloud-Abschnitt enthält noch "mein_passwort" aus der Vorlage). Das
+# ließ die Slideshow bei jedem Reinstall/Update fälschlich deaktiviert,
+# obwohl die Konfiguration für die tatsächlich genutzte Quelle längst
+# vollständig war.
+CONFIG_READY=0
+if [[ -f "$INSTALL_DIR/config.yaml" ]]; then
+    if python3 - "$INSTALL_DIR/config.yaml" << 'PYEOF'
+import sys
+import yaml
+
+with open(sys.argv[1]) as f:
+    cfg = yaml.safe_load(f) or {}
+
+source = cfg.get('source', 'nextcloud')
+
+if source == 'immich':
+    im = cfg.get('immich', {}) or {}
+    ok = bool(im.get('url')) and bool(im.get('api_key')) \
+         and im.get('api_key') != 'DEIN_API_KEY_HIER'
+else:
+    nc = cfg.get('nextcloud', {}) or {}
+    ok = bool(nc.get('url')) and bool(nc.get('username')) and bool(nc.get('password')) \
+         and nc.get('username') != 'mein_benutzer' and nc.get('password') != 'mein_passwort'
+
+sys.exit(0 if ok else 1)
+PYEOF
+    then
+        CONFIG_READY=1
+    fi
+fi
+
+if [[ "$CONFIG_READY" -eq 1 ]]; then
+    systemctl restart photoframe-slideshow
 else
-    systemctl start photoframe-slideshow
+    warn "Config für die aktive Quelle ($(grep -oP '^source:\s*\K\S+' "$INSTALL_DIR/config.yaml" 2>/dev/null || echo nextcloud)) noch nicht ausgefüllt – Slideshow startet nach dem Ausfüllen:"
+    warn "  sudo systemctl start photoframe-slideshow"
 fi
 
 # ---------------------------------------------------------------------------
@@ -270,7 +617,8 @@ echo ""
 echo "  Web-UI:     http://$(hostname).local:8080"
 echo "  Config:     $INSTALL_DIR/config.yaml"
 echo "  Cache:      $CACHE_DIR"
-echo "  Sync-Log:   $LOG_DIR/photoframe-sync.log"
+echo "  Sync-Log:       $LOG_DIR/photoframe-sync.log"
+echo "  Slideshow-Log:  $LOG_DIR/photoframe-slideshow.log"
 echo "  Python:     $PYTHON"
 echo ""
 echo "  Dienste prüfen:"

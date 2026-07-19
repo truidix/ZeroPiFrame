@@ -7,20 +7,22 @@
 <div class="card-grid">
   <div class="card">
     <div class="card-label">Slideshow</div>
-    <div class="status-badge {% if slide_status == 'active' %}badge-ok{% else %}badge-err{% endif %}">
+    <div id="slideshow-status-badge"
+         class="status-badge {% if slide_status == 'active' %}badge-ok{% else %}badge-err{% endif %}">
       {{ '● Läuft' if slide_status == 'active' else '○ ' + slide_status }}
     </div>
   </div>
   <div class="card">
-    <div class="card-label">Sync-Timer</div>
-    <div class="status-badge {% if timer_status == 'active' %}badge-ok{% else %}badge-warn{% endif %}">
-      {{ '● Aktiv' if timer_status == 'active' else '○ ' + timer_status }}
+    <div class="card-label">Sync</div>
+    <div id="sync-running-badge"
+         class="status-badge {% if sync_running %}badge-ok{% else %}badge-warn{% endif %}">
+      {{ '● Läuft gerade' if sync_running else '○ Leerlauf' }}
     </div>
   </div>
   <div class="card">
     <div class="card-label">Bilder im Cache</div>
-    <div class="stat-value">{{ n_images }}</div>
-    <div class="stat-sub">{{ size_gb }} GB</div>
+    <div class="stat-value" id="n-images">{{ n_images }}</div>
+    <div class="stat-sub"><span id="size-gb">{{ size_gb }}</span> GB</div>
   </div>
   <div class="card">
     <div class="card-label">Aktive Quelle</div>
@@ -30,12 +32,47 @@
 
 <div class="card mt">
   <div class="card-label">Letzter Sync</div>
-  <div class="mono">{{ last_sync }}</div>
+  <div id="last-sync-block">
+    {% if last_sync %}
+    <div class="mono">{{ last_sync.timestamp }} · Dauer: {{ '%.1f'|format(last_sync.duration) }}s</div>
+    <div class="stat-sub">+{{ last_sync.added }} neu, -{{ last_sync.removed }} gelöscht, {{ last_sync.skipped }} unverändert</div>
+    {% else %}
+    <div class="mono">Noch kein Sync</div>
+    {% endif %}
+  </div>
 </div>
 
-<div class="action-row mt">
-  <button class="btn btn-primary" onclick="syncNow()">🔄 Jetzt syncen</button>
-  <button class="btn btn-secondary" onclick="restartSlideshow()">↺ Slideshow neu starten</button>
+<div class="card mt">
+  <div class="card-label">Dienste aktivieren/deaktivieren (dauerhaft, übersteht Neustart)</div>
+  <div class="action-row">
+    <button class="btn btn-secondary" id="sync-toggle-btn" onclick="toggleAutoSync()">
+      {{ '⏸ Auto-Sync deaktivieren' if sync_enabled else '▶ Auto-Sync aktivieren' }}
+    </button>
+    <button class="btn btn-secondary" id="slideshow-toggle-btn" onclick="toggleSlideshowEnabled()">
+      {{ '⏸ Slideshow deaktivieren' if slideshow_enabled else '▶ Slideshow aktivieren' }}
+    </button>
+  </div>
+</div>
+
+<div class="card mt">
+  <div class="card-label">Sync – Aktueller Lauf</div>
+  <div class="action-row">
+    <button class="btn btn-primary" onclick="syncNow()">🔄 Jetzt syncen</button>
+    <button class="btn btn-secondary" id="sync-stop-btn" onclick="syncStop()"
+            style="{% if not sync_running %}display:none{% endif %}">⏹ Sync stoppen</button>
+  </div>
+</div>
+
+<div class="card mt">
+  <div class="card-label">Slideshow – Aktueller Prozess</div>
+  <div class="action-row">
+    <button class="btn btn-secondary" id="slideshow-start-btn" onclick="slideshowStart()"
+            style="{% if slide_status == 'active' %}display:none{% endif %}">▶ Starten</button>
+    <button class="btn btn-secondary" id="slideshow-stop-btn" onclick="slideshowStop()"
+            style="{% if slide_status != 'active' %}display:none{% endif %}">⏹ Stoppen</button>
+    <button class="btn btn-secondary" id="slideshow-restart-btn" onclick="restartSlideshow()"
+            style="{% if slide_status != 'active' %}display:none{% endif %}">↺ Neu starten</button>
+  </div>
 </div>
 
 <div class="card mt">
@@ -45,18 +82,146 @@
     <button class="btn btn-small btn-danger" onclick="setDisplay('off')">Aus</button>
   </div>
 </div>
+
+<div class="card mt">
+  <div class="card-label">Herunterfahren</div>
+  <p class="text-muted">
+    Schaltet zuerst HDMI aus, dann geordnetes Herunterfahren. Auch per
+    externem Trigger erreichbar: <code>POST /api/shutdown</code>
+    (z.B. aus Home Assistant vor dem Abschalten einer Smart-Plug-Steckdose).
+  </p>
+  <button class="btn btn-danger" onclick="shutdownNow()">⏻ Jetzt herunterfahren</button>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+// Merkt sich den zuletzt bekannten Auto-Sync-Zustand, damit der Toggle-Button
+// weiß, was er beim nächsten Klick umschalten soll (und damit ein Klick
+// sofort optimistisch reagiert, ohne auf den nächsten Poll zu warten).
+let syncEnabledState = {{ 'true' if sync_enabled else 'false' }};
+let slideshowEnabledState = {{ 'true' if slideshow_enabled else 'false' }};
+
+function renderSyncToggleBtn() {
+  document.getElementById('sync-toggle-btn').textContent =
+    syncEnabledState ? '⏸ Auto-Sync deaktivieren' : '▶ Auto-Sync aktivieren';
+}
+
+function renderSlideshowToggleBtn() {
+  document.getElementById('slideshow-toggle-btn').textContent =
+    slideshowEnabledState ? '⏸ Slideshow deaktivieren' : '▶ Slideshow aktivieren';
+}
+
+function show(el, visible) {
+  el.style.display = visible ? '' : 'none';
+}
+
+// Live-Status: pollt /api/status, damit man sieht, wenn ein Sync/die
+// Slideshow gerade läuft, und Buttons/Karten sich automatisch aktualisieren
+// sobald sich der Zustand ändert – ohne die Seite manuell neu laden zu
+// müssen. "Stoppen"-Buttons werden dabei komplett aus- statt nur
+// ausgegraut, damit nur die gerade sinnvollen Aktionen sichtbar sind.
+async function refreshStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+
+    const syncBadge = document.getElementById('sync-running-badge');
+    syncBadge.textContent = d.sync_running ? '● Läuft gerade' : '○ Leerlauf';
+    syncBadge.className = 'status-badge ' + (d.sync_running ? 'badge-ok' : 'badge-warn');
+    show(document.getElementById('sync-stop-btn'), d.sync_running);
+
+    syncEnabledState = d.sync_enabled;
+    renderSyncToggleBtn();
+
+    const slideActive = d.slideshow === 'active';
+    const slideBadge = document.getElementById('slideshow-status-badge');
+    slideBadge.textContent = slideActive ? '● Läuft' : '○ ' + d.slideshow;
+    slideBadge.className = 'status-badge ' + (slideActive ? 'badge-ok' : 'badge-err');
+    show(document.getElementById('slideshow-start-btn'), !slideActive);
+    show(document.getElementById('slideshow-stop-btn'), slideActive);
+    show(document.getElementById('slideshow-restart-btn'), slideActive);
+
+    slideshowEnabledState = d.slideshow_enabled;
+    renderSlideshowToggleBtn();
+
+    document.getElementById('n-images').textContent = d.n_images;
+    document.getElementById('size-gb').textContent = d.size_gb;
+
+    const lastSyncEl = document.getElementById('last-sync-block');
+    if (d.last_sync) {
+      lastSyncEl.innerHTML =
+        '<div class="mono">' + d.last_sync.timestamp + ' · Dauer: ' +
+        d.last_sync.duration.toFixed(1) + 's</div>' +
+        '<div class="stat-sub">+' + d.last_sync.added + ' neu, -' +
+        d.last_sync.removed + ' gelöscht, ' + d.last_sync.skipped +
+        ' unverändert</div>';
+    } else {
+      lastSyncEl.innerHTML = '<div class="mono">Noch kein Sync</div>';
+    }
+  } catch (e) { /* Netzwerkfehler beim Polling ignorieren, nächster Tick versucht erneut */ }
+}
+setInterval(refreshStatus, 4000);
+renderSyncToggleBtn();
+renderSlideshowToggleBtn();
+
 async function syncNow() {
   const r = await fetch('/api/sync_now', {method: 'POST'});
   const d = await r.json();
   toast(d.message, d.ok);
+  refreshStatus();
+}
+async function syncStop() {
+  const r = await fetch('/api/sync_stop', {method: 'POST'});
+  const d = await r.json();
+  toast(d.message, d.ok);
+  refreshStatus();
+}
+async function toggleAutoSync() {
+  const newState = !syncEnabledState;
+  const r = await fetch('/api/sync_toggle', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled: newState})
+  });
+  const d = await r.json();
+  toast(d.message, d.ok);
+  if (d.ok) {
+    syncEnabledState = newState;
+    renderSyncToggleBtn();
+  }
+}
+async function toggleSlideshowEnabled() {
+  const newState = !slideshowEnabledState;
+  const r = await fetch('/api/slideshow_toggle', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled: newState})
+  });
+  const d = await r.json();
+  toast(d.message, d.ok);
+  if (d.ok) {
+    slideshowEnabledState = newState;
+    renderSlideshowToggleBtn();
+    refreshStatus();
+  }
 }
 async function restartSlideshow() {
   const r = await fetch('/api/restart_slideshow', {method: 'POST'});
   toast('Slideshow wird neu gestartet…');
+  setTimeout(refreshStatus, 1500);
+}
+async function slideshowStart() {
+  const r = await fetch('/api/slideshow_start', {method: 'POST'});
+  const d = await r.json();
+  toast(d.message, d.ok);
+  refreshStatus();
+}
+async function slideshowStop() {
+  const r = await fetch('/api/slideshow_stop', {method: 'POST'});
+  const d = await r.json();
+  toast(d.message, d.ok);
+  refreshStatus();
 }
 async function setDisplay(power) {
   await fetch('/api/display_power', {
@@ -65,6 +230,12 @@ async function setDisplay(power) {
     body: JSON.stringify({power})
   });
   toast('Display ' + (power === 'on' ? 'eingeschaltet' : 'ausgeschaltet'));
+}
+async function shutdownNow() {
+  if (!confirm('Pi jetzt herunterfahren?')) return;
+  const r = await fetch('/api/shutdown', {method: 'POST'});
+  const d = await r.json();
+  toast(d.message, d.ok);
 }
 </script>
 {% endblock %}

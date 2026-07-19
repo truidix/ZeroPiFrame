@@ -51,6 +51,15 @@
       SSL-Zertifikat prüfen (deaktivieren bei selbstsigniertem Zertifikat)
     </label>
 
+    <label>Mindestauflösung (kleinere Seite, Pixel)
+      <input type="number" name="nc_min_res" min="0" step="10"
+             value="{{ cfg.get('nextcloud', {}).get('min_resolution_px', 0) }}">
+      <small>Fotos unterhalb dieser Auflösung werden nach dem Download verworfen
+             (WebDAV liefert die Auflösung nicht im Voraus). 0 = kein Filter.
+             Bereits gecachte Fotos darunter werden beim nächsten Sync automatisch
+             entfernt.</small>
+    </label>
+
     <button type="button" class="btn btn-secondary mt-sm"
             onclick="testConnection('nextcloud')">Verbindung testen</button>
     <div id="nc-result" class="test-result"></div>
@@ -75,6 +84,15 @@
     <label>Alben synchronisieren (optional, einer pro Zeile)
       <textarea name="im_albums" rows="3"
                 placeholder="Bilderrahmen&#10;Familie&#10;(leer = alle Fotos)">{{ (cfg.get('immich', {}).get('albums', []) or []) | join('\n') }}</textarea>
+    </label>
+
+    <label>Mindestauflösung (kleinere Seite, Pixel)
+      <input type="number" name="im_min_res" min="0" step="10"
+             value="{{ cfg.get('immich', {}).get('min_resolution_px', 0) }}">
+      <small>Fotos unterhalb dieser Auflösung werden nicht heruntergeladen (0 = kein Filter).
+             Verhindert sichtbares Pixelbrei durch Hochskalieren von von Haus aus
+             niedrig aufgelösten Originalen. Bereits gecachte Fotos darunter werden
+             beim nächsten Sync automatisch entfernt.</small>
     </label>
 
     <button type="button" class="btn btn-secondary mt-sm"

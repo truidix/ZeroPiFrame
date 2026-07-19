@@ -17,6 +17,7 @@ from typing import Optional
 import yaml
 import requests
 from requests.auth import HTTPBasicAuth
+from PIL import Image
 
 LOG_FORMAT = '%(asctime)s [sync] %(levelname)s: %(message)s'
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT,
@@ -139,6 +140,29 @@ class NextcloudSync:
         self.session  = requests.Session()
         self.session.auth = HTTPBasicAuth(self.username, self.password)
         self.session.verify = cfg.get('verify_ssl', True)
+        # Anders als bei Immich liefert WebDAV/PROPFIND keine Bildauflösung
+        # in den Metadaten – die Datei muss also erst heruntergeladen werden,
+        # bevor geprüft werden kann, ob sie unter der Mindestauflösung liegt.
+        # Wird sie herausgefiltert, bleibt eine .lowres-Markerdatei mit dem
+        # ETag stehen, damit sie nicht bei jedem Sync erneut heruntergeladen
+        # wird, solange sich die Datei auf dem Server nicht ändert.
+        self.min_resolution_px = cfg.get('min_resolution_px', 0) or 0
+
+    def _below_min_resolution(self, path: Path) -> bool:
+        """True wenn das lokal heruntergeladene Bild unter der konfigurierten
+        Mindestauflösung liegt. Nutzt PIL's Image.open(), das nur den Header
+        liest (kein voller Decode) – auch bei vielen/großen Dateien schnell.
+        Kann die Auflösung nicht ermittelt werden (kaputte/unbekannte Datei),
+        wird im Zweifel NICHT gefiltert, um kein gültiges Foto zu verlieren.
+        """
+        if not self.min_resolution_px:
+            return False
+        try:
+            with Image.open(path) as img:
+                w, h = img.size
+        except Exception:
+            return False
+        return min(w, h) < self.min_resolution_px
 
     def list_remote(self, path: str = '') -> list[dict]:
         """Listet Dateien per WebDAV PROPFIND auf."""
@@ -205,6 +229,22 @@ class NextcloudSync:
              delete_removed: bool) -> tuple[int, int, int]:
         added = removed = skipped = 0
 
+        if self.min_resolution_px:
+            log.info(f'Mindestauflösung aktiv: kleinere Seite >= {self.min_resolution_px}px')
+            # Bereits gecachte Bilder, die die (ggf. nachträglich aktivierte
+            # oder erhöhte) Mindestauflösung unterschreiten, aus dem Cache
+            # entfernen. Image.open() liest hierfür nur den Header, kein
+            # voller Decode – auch bei vielen Dateien vernachlässigbar teuer.
+            for name, path in list(existing.items()):
+                if path.suffix.lower() not in SUPPORTED_IMAGES:
+                    continue
+                if self._below_min_resolution(path):
+                    path.unlink(missing_ok=True)
+                    (CACHE_DIR / f'.{name}.etag').unlink(missing_ok=True)
+                    del existing[name]
+                    log.info(f'Entfernt (Mindestauflösung unterschritten): {name}')
+                    removed += 1
+
         if self.folders:
             remote_files = []
             for folder in self.folders:
@@ -218,20 +258,42 @@ class NextcloudSync:
         total_bytes = cache_size_gb() * (1024 ** 3)
         limit_bytes = max_gb * (1024 ** 3)
 
+        skipped_low_res = 0
         remote_names = set()
         for rf in remote_files:
-            # Dateinamen ggf. anpassen um Kollisionen zu vermeiden
-            safe_name = rf['name']
+            # Eindeutigen Cache-Dateinamen aus dem VOLLEN WebDAV-Pfad ableiten,
+            # nicht nur dem Basisnamen: Kameras/Handys vergeben Dateinamen oft
+            # nach einem generischen Schema (IMG_0001.JPG, DSC_0001.JPG, ...),
+            # das sich über verschiedene Ordner/Zeiträume hinweg wiederholt.
+            # Mit nur dem Basisnamen als Cache-Key würden zwei völlig
+            # verschiedene Fotos aus zwei Ordnern auf denselben lokalen
+            # Dateinamen kollidieren – der zweite Sync-Durchlauf würde dann
+            # das erste Foto einfach überschreiben, das dadurch unwiderruflich
+            # aus der Rotation verschwindet (fühlt sich an wie "es zeigt
+            # immer wieder dieselben Bilder", obwohl in Wahrheit ein Teil der
+            # Bibliothek nie in den Cache geschafft hat).
+            path_hash = hashlib.md5(rf['href'].encode('utf-8')).hexdigest()[:10]
+            safe_name = f'{path_hash}_{rf["name"]}'
             remote_names.add(safe_name)
 
-            local_path = CACHE_DIR / safe_name
-            etag_file  = CACHE_DIR / f'.{safe_name}.etag'
+            local_path   = CACHE_DIR / safe_name
+            etag_file    = CACHE_DIR / f'.{safe_name}.etag'
+            lowres_marker = CACHE_DIR / f'.{safe_name}.lowres'
 
             # Prüfe ob Datei neu oder verändert ist
             if local_path.exists() and etag_file.exists():
                 cached_etag = etag_file.read_text().strip()
                 if cached_etag == rf['etag'] and rf['etag']:
                     skipped += 1
+                    continue
+
+            # War diese Datei (bei unverändertem ETag) bereits als zu
+            # niedrig aufgelöst markiert? Dann nicht erneut herunterladen,
+            # nur um sie danach doch wieder zu verwerfen.
+            if self.min_resolution_px and lowres_marker.exists():
+                marked_etag = lowres_marker.read_text().strip()
+                if marked_etag == rf['etag'] and rf['etag']:
+                    skipped_low_res += 1
                     continue
 
             if total_bytes >= limit_bytes:
@@ -248,6 +310,23 @@ class NextcloudSync:
                 old_size = local_path.stat().st_size if local_path.exists() else 0
                 new_size = _download_atomic(resp, local_path)
                 total_bytes += new_size - old_size
+
+                # Erst NACH dem Download prüfbar: WebDAV/PROPFIND liefert
+                # anders als die Immich-Metadaten keine Bildauflösung im
+                # Voraus, daher kann hier nicht wie bei Immich vor dem
+                # Download gefiltert werden.
+                if Path(safe_name).suffix.lower() in SUPPORTED_IMAGES \
+                        and self._below_min_resolution(local_path):
+                    local_path.unlink(missing_ok=True)
+                    total_bytes -= new_size
+                    if rf['etag']:
+                        lowres_marker.write_text(rf['etag'])
+                    etag_file.unlink(missing_ok=True)
+                    log.info(f'Wegen Mindestauflösung verworfen: {safe_name}')
+                    skipped_low_res += 1
+                    continue
+
+                lowres_marker.unlink(missing_ok=True)
                 if rf['etag']:
                     etag_file.write_text(rf['etag'])
                 log.info(f'Heruntergeladen: {safe_name}')
@@ -256,6 +335,10 @@ class NextcloudSync:
                 log.error(f'Download-Fehler {safe_name}: {e}')
                 local_path.with_name(local_path.name + '.part').unlink(missing_ok=True)
 
+        if skipped_low_res:
+            log.info(f'{skipped_low_res} Datei(en) wegen Mindestauflösung übersprungen')
+            skipped += skipped_low_res
+
         if delete_removed:
             for name, path in list(existing.items()):
                 if name not in remote_names:
@@ -263,6 +346,11 @@ class NextcloudSync:
                     (CACHE_DIR / f'.{name}.etag').unlink(missing_ok=True)
                     log.info(f'Gelöscht (nicht mehr auf Server): {name}')
                     removed += 1
+            # Verwaiste .lowres-Marker aufräumen (Datei auf Server gelöscht)
+            for marker in CACHE_DIR.glob('.*.lowres'):
+                orig_name = marker.name[1:-len('.lowres')]
+                if orig_name not in remote_names:
+                    marker.unlink(missing_ok=True)
 
         return added, removed, skipped
 
@@ -276,6 +364,14 @@ class ImmichSync:
         self.api_key   = cfg['api_key']
         self.albums    = cfg.get('albums', [])   # leer = alle Fotos
         self.all_photos = cfg.get('all_photos', True)
+        # Assets, deren kleinere Seite unter diesem Wert liegt, werden gar
+        # nicht erst heruntergeladen (0/None = kein Filter). Bekämpft
+        # Pixelbrei durch Hochskalieren von Originalen, die selbst schon
+        # niedrig aufgelöst sind (alte Handyfotos, WhatsApp-Komprimierung,
+        # Screenshots) – die Immich-"original"-Datei ist immer schon die
+        # bestmögliche Qualität, es gibt keine weitere "Qualitätsstufe"
+        # jenseits davon zu wählen.
+        self.min_resolution_px = cfg.get('min_resolution_px', 0) or 0
         self.headers   = {'x-api-key': self.api_key,
                           'Accept': 'application/json'}
 
@@ -289,35 +385,99 @@ class ImmichSync:
         resp.raise_for_status()
         return resp.json()
 
+    def _post(self, endpoint: str, json_body: dict, **kwargs) -> dict | list:
+        resp = requests.post(
+            f'{self.base_url}{endpoint}',
+            headers=self.headers,
+            json=json_body,
+            timeout=30,
+            **kwargs
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def get_assets(self) -> list[dict]:
-        """Gibt alle relevanten Assets zurück."""
+        """Gibt alle relevanten Assets zurück.
+
+        Läuft komplett über POST /api/search/metadata: aktuelle Immich-Versionen
+        haben GET /api/assets (Listing aller Fotos) entfernt, und
+        GET /api/albums/{id} liefert seitdem nur noch Metadaten + assetCount,
+        keine eingebettete Asset-Liste mehr. Der Suchendpunkt deckt beide
+        Fälle ab – ohne albumIds-Filter die komplette Bibliothek, mit Filter
+        nur die Assets der angegebenen Alben (OR-verknüpft, falls mehrere).
+        """
+        album_ids = None
         if self.albums:
-            assets = []
+            log.info(f'Album-Filter aktiv, konfiguriert: {self.albums}')
             all_albums = self._get('/api/albums')
             name_to_id = {a['albumName']: a['id'] for a in all_albums}
+            log.info(f'Für diesen API-Key sichtbare Alben ({len(name_to_id)}): '
+                     f'{sorted(name_to_id) or "(keine)"}')
+            album_ids = []
             for album_name in self.albums:
-                album_id = name_to_id.get(album_name)
-                if not album_id:
-                    log.warning(f'Immich-Album nicht gefunden: {album_name}')
+                aid = name_to_id.get(album_name)
+                if not aid:
+                    log.warning(f'Immich-Album nicht gefunden: "{album_name}" '
+                               f'(Groß-/Kleinschreibung und Leerzeichen müssen exakt passen)')
                     continue
-                album_data = self._get(f'/api/albums/{album_id}')
-                assets.extend(album_data.get('assets', []))
-            return assets
+                log.info(f'Immich-Album gefunden: "{album_name}" -> {aid}')
+                album_ids.append(aid)
+            if not album_ids:
+                log.warning('Kein konfiguriertes Album gefunden – Sync liefert 0 Assets')
+                return []
         else:
-            # Alle Fotos (paginiert)
-            assets = []
-            page   = 1
-            size   = 500
-            while True:
-                batch = self._get('/api/assets', params={'page': page, 'size': size})
-                if not batch:
-                    break
-                # Nur Bilder (keine Videos)
-                assets.extend(a for a in batch if a.get('type') in ('IMAGE', 'VIDEO'))
-                if len(batch) < size:
-                    break
-                page += 1
-            return assets
+            log.info('Kein Album-Filter konfiguriert (immich.albums ist leer) – '
+                     'suche in der GESAMTEN Bibliothek des API-Key-Accounts. '
+                     'Achtung: bei einem dedizierten/geteilten Account, der selbst '
+                     'keine eigenen Fotos besitzt, liefert das immer 0 Assets – '
+                     'in dem Fall muss albums: [...] gesetzt sein.')
+
+        if self.min_resolution_px:
+            log.info(f'Mindestauflösung aktiv: kleinere Seite >= {self.min_resolution_px}px')
+
+        assets = []
+        skipped_low_res = 0
+        page = 1
+        size = 500
+        while True:
+            body = {'page': page, 'size': size}
+            if album_ids:
+                body['albumIds'] = album_ids
+            data  = self._post('/api/search/metadata', body)
+            items = data.get('assets', {}).get('items', [])
+            if not items:
+                break
+            # Nur Bilder und Videos (keine Audio/Sonstiges)
+            for a in items:
+                if a.get('type') not in ('IMAGE', 'VIDEO'):
+                    continue
+                if self._below_min_resolution(a):
+                    skipped_low_res += 1
+                    continue
+                assets.append(a)
+            if len(items) < size:
+                break
+            page += 1
+
+        if skipped_low_res:
+            log.info(f'{skipped_low_res} Asset(s) wegen Mindestauflösung übersprungen')
+        return assets
+
+    def _below_min_resolution(self, asset: dict) -> bool:
+        """True wenn das Asset unter der konfigurierten Mindestauflösung liegt.
+
+        Videos werden nie herausgefiltert (Auflösung ist dort weniger
+        kritisch, die width/height-Semantik ist zudem uneinheitlicher).
+        Fehlt width/height (manche älteren/importierten Assets haben das
+        nicht gepflegt), wird das Asset im Zweifel NICHT gefiltert, um nicht
+        versehentlich gültige Fotos zu verlieren.
+        """
+        if not self.min_resolution_px or asset.get('type') != 'IMAGE':
+            return False
+        w, h = asset.get('width'), asset.get('height')
+        if not w or not h:
+            return False
+        return min(w, h) < self.min_resolution_px
 
     def sync(self, existing: dict[str, Path], max_gb: float,
              delete_removed: bool) -> tuple[int, int, int]:

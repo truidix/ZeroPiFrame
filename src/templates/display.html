@@ -26,6 +26,27 @@
   </div>
 
   <div class="card mt">
+    <div class="card-label">Automatisches Herunterfahren</div>
+    <p class="text-muted">
+      Für Betrieb an einer Zeitschaltuhr / Smart-Plug: der Pi fährt sich
+      selbst sauber herunter, statt dass der Strom roh gekappt wird
+      (schont die SD-Karte). Stelle die Zeit mindestens 2–3 Minuten vor
+      der Abschaltzeit deiner Steckdose ein. Beim nächsten Einschalten der
+      Steckdose startet der Pi automatisch neu.
+    </p>
+    <label class="checkbox-label">
+      <input type="checkbox" name="shutdown_enabled" id="shutdown-toggle"
+             {% if disp.get('shutdown_time') %}checked{% endif %}>
+      Automatisches Herunterfahren aktivieren
+    </label>
+    <div id="shutdown-fields">
+      <label>Herunterfahren um
+        <input type="time" name="shutdown_time" value="{{ disp.get('shutdown_time', '22:55') }}">
+      </label>
+    </div>
+  </div>
+
+  <div class="card mt">
     <div class="card-label">Display sofort steuern</div>
     <div class="btn-row">
       <button type="button" class="btn btn-primary" onclick="setDisplay('on')">Einschalten</button>
@@ -78,6 +99,15 @@ function updateSchedule() {
 }
 toggle.addEventListener('change', updateSchedule);
 updateSchedule();
+
+const shutdownToggle = document.getElementById('shutdown-toggle');
+const shutdownFields = document.getElementById('shutdown-fields');
+
+function updateShutdownFields() {
+  shutdownFields.style.display = shutdownToggle.checked ? '' : 'none';
+}
+shutdownToggle.addEventListener('change', updateShutdownFields);
+updateShutdownFields();
 
 async function setDisplay(power) {
   await fetch('/api/display_power', {

@@ -17,6 +17,13 @@ nextcloud:
   #   - "Urlaub 2024"
   #   - "Familie"
   verify_ssl: true   # false bei selbstsigniertem Zertifikat
+  # Optional: Fotos mit kleinerer Seite unter diesem Wert (Pixel) werden nach
+  # dem Download verworfen (WebDAV liefert die Auflösung nicht im Voraus,
+  # anders als bei Immich). Gegen sichtbares Pixelbrei durch Hochskalieren
+  # von von Haus aus niedrig aufgelösten Originalen. 0 = kein Filter.
+  # Bereits gecachte Fotos unterhalb des Schwellwerts werden beim nächsten
+  # Sync automatisch aus dem Cache entfernt (delete_removed).
+  min_resolution_px: 0
 
 # ---------------------------------------------------------------------------
 # Immich
@@ -28,6 +35,13 @@ immich:
   # albums:
   #   - "Bilderrahmen"
   all_photos: true   # wird automatisch false wenn albums angegeben
+  # Optional: Fotos mit kleinerer Seite unter diesem Wert (Pixel) werden gar
+  # nicht erst heruntergeladen. Nützlich gegen sichtbares Pixelbrei durch
+  # Hochskalieren von von Haus aus niedrig aufgelösten Originalen (alte
+  # Handyfotos, WhatsApp-Komprimierung, Screenshots). 0 = kein Filter.
+  # Bereits gecachte Fotos unterhalb des Schwellwerts werden beim nächsten
+  # Sync automatisch aus dem Cache entfernt (delete_removed).
+  min_resolution_px: 0
 
 # ---------------------------------------------------------------------------
 # Sync
@@ -42,9 +56,13 @@ sync:
 # ---------------------------------------------------------------------------
 slideshow:
   interval_seconds: 30        # Anzeigedauer pro Bild
-  # Übergänge: none, fade, ken_burns, slide_left, slide_right,
-  #            slide_up, slide_down, wipe_left, zoom_in, dissolve
-  transition: "ken_burns"
+  # Aktivierte Übergänge (Mehrfachauswahl im Web-UI). Bei mehr als einem
+  # Eintrag wechselt die Slideshow bei jedem Bild zufällig zwischen ihnen.
+  # Mögliche Werte: none, fade, ken_burns, slide_left, slide_right,
+  #                 slide_up, slide_down, wipe_left, wipe_right, wipe_up,
+  #                 wipe_down, zoom_in, dissolve, iris, barn_door, blinds, flash
+  enabled_transitions:
+    - "ken_burns"
   transition_duration_ms: 1500
   ken_burns_zoom: 0.08        # Zoom-Stärke (0.04–0.20)
   shuffle: true               # Zufällige Reihenfolge
@@ -60,3 +78,9 @@ display:
   # HDMI-Zeitplan (leer = immer an)
   on_time:  "08:00"
   off_time: "23:00"
+  # Automatisches Herunterfahren (leer = deaktiviert). Für Betrieb an einer
+  # Zeitschaltuhr/Smart-Plug: der Pi fährt sich selbst ein paar Minuten VOR
+  # der geplanten Abschaltzeit der Steckdose sauber herunter, statt dass der
+  # Strom roh gekappt wird (schont die SD-Karte). Beim nächsten Einschalten
+  # der Steckdose bootet der Pi automatisch neu.
+  shutdown_time: "22:55"

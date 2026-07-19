@@ -15,7 +15,17 @@
   </div>
 
   <div class="card mt">
-    <div class="card-label">Übergang</div>
+    <div class="card-label">Übergänge</div>
+    <p class="text-muted" style="margin-top:-0.25rem">
+      Mehrfachauswahl möglich. Sind mehrere aktiviert, wechselt die Slideshow
+      bei jedem Bild zufällig zwischen ihnen. Mindestens einer muss aktiv sein.
+    </p>
+
+    <div class="btn-row mt-sm" style="margin-bottom:0.5rem">
+      <button type="button" class="btn btn-small" onclick="setAllTransitions(true)">Alle auswählen</button>
+      <button type="button" class="btn btn-small" onclick="setAllTransitions(false)">Alle abwählen</button>
+    </div>
+
     <div class="transition-grid">
       {% set transitions = [
         ('none',        'Kein',        'Sofortiger Schnitt',                   '⚡'),
@@ -25,14 +35,22 @@
         ('slide_right', 'Slide Rechts','Neues Bild schiebt von links herein',  '▶'),
         ('slide_up',    'Slide Oben',  'Neues Bild schiebt von unten herein',  '▲'),
         ('slide_down',  'Slide Unten', 'Neues Bild schiebt von oben herein',   '▼'),
-        ('wipe_left',   'Wipe',        'Neues Bild wird von links enthüllt',   '▷'),
+        ('wipe_left',   'Wipe Links',  'Neues Bild wird von links enthüllt',   '▷'),
+        ('wipe_right',  'Wipe Rechts', 'Neues Bild wird von rechts enthüllt',  '◁'),
+        ('wipe_up',     'Wipe Oben',   'Neues Bild wird von unten enthüllt',   '△'),
+        ('wipe_down',   'Wipe Unten',  'Neues Bild wird von oben enthüllt',    '▽'),
         ('zoom_in',     'Zoom',        'Altes Bild zoomt heraus',              '🔍'),
         ('dissolve',    'Dissolve',    'Block-Auflösung in Zufallsreihenfolge','✦'),
+        ('iris',        'Iris',       'Kreisblende von der Mitte aus',        '◎'),
+        ('barn_door',   'Vorhang',    'Bild teilt sich in der Mitte',         '🚪'),
+        ('blinds',      'Jalousie',   'Vertikale Streifen klappen auf',       '☰'),
+        ('flash',       'Blitz',      'Kurzer Weißblitz zwischen den Bildern','⚡'),
       ] %}
+      {% set enabled_list = sl.get('enabled_transitions') or [sl.get('transition', 'ken_burns')] %}
       {% for val, label, desc, icon in transitions %}
-      <label class="transition-option {% if sl.get('transition','ken_burns') == val %}selected{% endif %}">
-        <input type="radio" name="transition" value="{{ val }}"
-               {% if sl.get('transition','ken_burns') == val %}checked{% endif %}>
+      <label class="transition-option {% if val in enabled_list %}selected{% endif %}">
+        <input type="checkbox" name="enabled_transitions" value="{{ val }}"
+               {% if val in enabled_list %}checked{% endif %}>
         <span class="t-icon">{{ icon }}</span>
         <span class="t-label">{{ label }}</span>
         <span class="t-desc">{{ desc }}</span>
@@ -45,6 +63,7 @@
         <input type="number" name="t_duration" min="200" max="5000" step="100"
                value="{{ sl.get('transition_duration_ms', 1500) }}">
       </label>
+      <small>Gilt für alle Übergänge außer Ken Burns und Kein Übergang.</small>
     </div>
 
     <div id="kb-row">
@@ -117,22 +136,46 @@
 
 {% block scripts %}
 <script>
-function updateTransitionUI() {
-  const val        = document.querySelector('input[name="transition"]:checked')?.value;
-  const isKenBurns = val === 'ken_burns';
-  const isNone     = val === 'none';
+function checkedTransitions() {
+  return Array.from(document.querySelectorAll('input[name="enabled_transitions"]:checked'))
+               .map(el => el.value);
+}
 
-  document.getElementById('kb-row').style.display      = isKenBurns ? '' : 'none';
-  document.getElementById('duration-row').style.display = isNone || isKenBurns ? 'none' : '';
+function updateTransitionUI() {
+  const checked = checkedTransitions();
+
+  document.getElementById('kb-row').style.display =
+    checked.includes('ken_burns') ? '' : 'none';
+
+  // Übergangsdauer ist irrelevant wenn nur "Kein"/"Ken Burns" (oder gar
+  // nichts) aktiv ist – zeigen nur wenn mind. eine echte Blit-Transition an ist.
+  const needsDuration = checked.some(v => v !== 'none' && v !== 'ken_burns');
+  document.getElementById('duration-row').style.display = needsDuration ? '' : 'none';
 
   document.querySelectorAll('.transition-option').forEach(el => {
-    el.classList.toggle('selected', el.querySelector('input').value === val);
+    el.classList.toggle('selected', el.querySelector('input').checked);
   });
 }
 
-document.querySelectorAll('input[name="transition"]').forEach(r =>
-  r.addEventListener('change', updateTransitionUI));
+function setAllTransitions(value) {
+  document.querySelectorAll('input[name="enabled_transitions"]').forEach(el => {
+    el.checked = value;
+  });
+  updateTransitionUI();
+}
+
+document.querySelectorAll('input[name="enabled_transitions"]').forEach(cb =>
+  cb.addEventListener('change', updateTransitionUI));
 updateTransitionUI();
+
+// Mindestens ein Übergang muss aktiv bleiben, sonst hätte die Slideshow
+// keinen Anzeigemodus mehr.
+document.querySelector('form').addEventListener('submit', (e) => {
+  if (checkedTransitions().length === 0) {
+    e.preventDefault();
+    alert('Bitte mindestens einen Übergang aktiviert lassen.');
+  }
+});
 
 // Audio-Zeile nur anzeigen wenn Video aktiv
 const videoToggle = document.getElementById('video-enabled-toggle');
