@@ -152,6 +152,10 @@
   "install.placeholder_heading": "Update running",
   "install.placeholder_line1": "Please hold on a moment -",
   "install.placeholder_line2": "the slideshow will restart automatically afterwards.",
+  "boot.splash_heading": "Starting up",
+  "boot.splash_line1": "Please wait, your photos will appear shortly.",
+  "shutdown.splash_heading": "Shutting down",
+  "shutdown.splash_line1": "It's now safe to disconnect power once the screen goes dark.",
   "api.shutdown_initiated": "HDMI off, shutdown initiated",
   "api.cache_cleared": "Cache cleared"
 }

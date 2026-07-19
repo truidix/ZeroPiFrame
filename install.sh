@@ -85,7 +85,7 @@ if [[ "$SLIDESHOW_WAS_ACTIVE" -eq 1 ]]; then
         [[ -n "$CONFIGURED_LANG" ]] && NOTICE_LANG="$CONFIGURED_LANG"
     fi
     NOTICE_IMAGE="$SCRIPT_DIR/assets/update-please-wait-$NOTICE_LANG.png"
-    [[ -f "$NOTICE_IMAGE" ]] || NOTICE_IMAGE="$SCRIPT_DIR/assets/update-please-wait.png"
+    [[ -f "$NOTICE_IMAGE" ]] || NOTICE_IMAGE="$SCRIPT_DIR/assets/update-please-wait-en.png"
     if command -v fbi &>/dev/null && [[ -e /dev/fb0 ]]; then
         fbi -T 1 -d /dev/fb0 -a --noverbose \
             "$NOTICE_IMAGE" \
@@ -140,16 +140,57 @@ command -v vcgencmd &>/dev/null || \
 # ---------------------------------------------------------------------------
 info "2/10 Installing files"
 # ---------------------------------------------------------------------------
-mkdir -p "$INSTALL_DIR/templates" "$INSTALL_DIR/static" "$CACHE_DIR"
+mkdir -p "$INSTALL_DIR/templates" "$INSTALL_DIR/static" "$INSTALL_DIR/assets" \
+         "$INSTALL_DIR/translations" "$CACHE_DIR"
 
 cp "$SCRIPT_DIR/slideshow.py"          "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/sync.py"               "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/webui.py"              "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/i18n.py"               "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/templates/"*.html     "$INSTALL_DIR/templates/"
 cp "$SCRIPT_DIR/static/"*.css         "$INSTALL_DIR/static/"
+cp "$SCRIPT_DIR/translations/"*.json  "$INSTALL_DIR/translations/"
 cp "$(dirname "$0")/requirements.txt" "$INSTALL_DIR/"
 
+# Boot/shutdown/update notice images - the boot-splash service and the
+# system-shutdown hook (set up below) run long after install.sh itself has
+# exited, so unlike the update-notice image in step 0b (read straight from
+# $SCRIPT_DIR while the installer is still running), these need to actually
+# live under $INSTALL_DIR to still be there later.
+cp "$SCRIPT_DIR/assets/"*.png "$INSTALL_DIR/assets/"
+
 touch "$INSTALL_DIR/static/placeholder.png"
+
+# Resolves the notice image matching the configured UI language (falls
+# back to English) - shared by photoframe-boot-splash.service and the
+# system-shutdown hook script, both set up below. install.sh's own step 0b
+# above does NOT use this: it has to be self-contained since it runs
+# during the install/update itself, potentially before this file exists
+# yet on a first install.
+cat > "$INSTALL_DIR/resolve-notice-image.sh" << 'EOF'
+#!/bin/bash
+# Usage: resolve-notice-image.sh <basename>
+#   e.g. resolve-notice-image.sh booting
+#        -> /opt/photoframe/assets/booting-de.png (or -en.png as fallback)
+set -euo pipefail
+
+BASENAME="${1:?Usage: resolve-notice-image.sh <basename>}"
+ASSETS_DIR="/opt/photoframe/assets"
+CONFIG="/opt/photoframe/config.yaml"
+
+LANG_CODE="en"
+if [[ -f "$CONFIG" ]]; then
+    CONFIGURED_LANG="$(grep -m1 '^language:' "$CONFIG" 2>/dev/null \
+        | sed -E "s/^language:[[:space:]]*[\"']?([A-Za-z_-]+)[\"']?.*/\1/")"
+    [[ -n "$CONFIGURED_LANG" ]] && LANG_CODE="$CONFIGURED_LANG"
+fi
+
+IMAGE="$ASSETS_DIR/$BASENAME-$LANG_CODE.png"
+[[ -f "$IMAGE" ]] || IMAGE="$ASSETS_DIR/$BASENAME-en.png"
+echo "$IMAGE"
+EOF
+chmod 755 "$INSTALL_DIR/resolve-notice-image.sh"
+
 chmod -R 755 "$INSTALL_DIR"
 
 # ---------------------------------------------------------------------------
@@ -198,10 +239,26 @@ info "6/10 Configuring console / framebuffer"
 # ---------------------------------------------------------------------------
 systemctl disable getty@tty1 2>/dev/null || true
 
+# Kernel/systemd boot and shutdown messages otherwise print straight to the
+# framebuffer console (tty1) - the same one photoframe-boot-splash.service
+# and the shutdown splash draw to. Quieting them down here is what actually
+# keeps that text off the screen; the splash images (below) then have a
+# blank/idle console to draw over instead of scrolling log lines.
 CMDLINE="$BOOT_DIR/cmdline.txt"
-if [[ -f "$CMDLINE" ]] && ! grep -q "vt.global_cursor_default=0" "$CMDLINE"; then
-    sed -i 's/$/ vt.global_cursor_default=0/' "$CMDLINE"
-    info "Cursor blinking disabled (takes effect after reboot)"
+if [[ -f "$CMDLINE" ]]; then
+    for flag in \
+        "vt.global_cursor_default=0" \
+        "quiet" \
+        "loglevel=3" \
+        "logo.nologo" \
+        "consoleblank=0" \
+        "systemd.show_status=0"
+    do
+        if ! grep -q "$flag" "$CMDLINE"; then
+            sed -i "s/\$/ $flag/" "$CMDLINE"
+            info "cmdline.txt: added '$flag' (takes effect after reboot)"
+        fi
+    done
 fi
 
 CONFIG="$BOOT_DIR/config.txt"
@@ -264,10 +321,44 @@ info "8/10 Setting up systemd services"
 # ---------------------------------------------------------------------------
 PYTHON="$VENV_DIR/bin/python3"
 
+# Shows a "starting up" notice image over the framebuffer from very early
+# in boot (sysinit.target, well before multi-user.target/the slideshow)
+# until photoframe-slideshow.service takes over the display - covers the
+# stretch of boot where systemd/kernel status messages would otherwise be
+# the only thing on screen. Conflicts= (declared on both units, see below)
+# makes systemd automatically stop this one the moment the slideshow
+# actually starts, without any extra scripting.
+cat > /etc/systemd/system/photoframe-boot-splash.service << 'EOF'
+[Unit]
+Description=Photoframe boot splash (hides console/systemd status messages during boot)
+After=local-fs.target
+Before=photoframe-slideshow.service
+Conflicts=photoframe-slideshow.service
+
+[Service]
+Type=simple
+# The framebuffer device can take a moment to appear after the KMS driver
+# probes - wait for it rather than failing outright if we win that race.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 20); do [ -e /dev/fb0 ] && exit 0; sleep 0.5; done; exit 1'
+ExecStart=/bin/bash -c 'exec /usr/bin/fbi -T 1 -d /dev/fb0 -a --noverbose "$(/opt/photoframe/resolve-notice-image.sh booting)" < /dev/null'
+Restart=no
+# Safety net: if the slideshow never actually starts (e.g. config.yaml
+# isn't filled in yet), don't leave this running forever - stop after a
+# generous timeout instead of a stale screen with no timeout at all.
+RuntimeMaxSec=90
+TimeoutStopSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sysinit.target
+EOF
+
 cat > /etc/systemd/system/photoframe-slideshow.service << EOF
 [Unit]
 Description=Photoframe Slideshow
 After=multi-user.target systemd-udev-settle.service
+Conflicts=photoframe-boot-splash.service
 
 [Service]
 User=$FRAME_USER
@@ -340,6 +431,39 @@ Nice=5
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Shutdown splash: scripts in /usr/lib/systemd/system-shutdown/ are run by
+# systemd-shutdown itself right before the final reboot()/poweroff() call -
+# after every other service has already been stopped - which is exactly
+# the point where "Stopping X..."/kernel unmount messages would otherwise
+# be the last thing visible on screen. No systemd unit/enable needed here;
+# systemd-shutdown auto-discovers executables in this directory.
+mkdir -p /usr/lib/systemd/system-shutdown
+cat > /usr/lib/systemd/system-shutdown/photoframe-splash.sh << 'EOF'
+#!/bin/bash
+# $1 is "halt"/"poweroff"/"reboot"/"kexec" - not distinguished here, the
+# same splash covers all of them.
+#
+# Uses hardcoded absolute paths throughout (not "command -v"/bare command
+# names) since PATH can't be relied on to be fully populated this late in
+# shutdown, after systemd-shutdown has taken over from regular PID 1.
+RESOLVER="/opt/photoframe/resolve-notice-image.sh"
+FBI="/usr/bin/fbi"
+[[ -x "$RESOLVER" ]] || exit 0
+[[ -x "$FBI" ]] || exit 0
+[[ -e /dev/fb0 ]] || exit 0
+
+IMAGE="$("$RESOLVER" shutting-down 2>/dev/null || true)"
+[[ -n "$IMAGE" && -f "$IMAGE" ]] || exit 0
+
+# -T 1 --noverbose draws the image once and then fbi just sits there; the
+# timeout guards against that blocking the actual shutdown, since this
+# script has to return before systemd-shutdown proceeds. The already-drawn
+# frame stays on the framebuffer even after fbi is killed by the timeout.
+/usr/bin/timeout 3 "$FBI" -T 1 -d /dev/fb0 -a --noverbose "$IMAGE" < /dev/null > /dev/null 2>&1 || true
+EOF
+chown root:root /usr/lib/systemd/system-shutdown/photoframe-splash.sh
+chmod 755 /usr/lib/systemd/system-shutdown/photoframe-splash.sh
 
 # ---------------------------------------------------------------------------
 info "9/10 Setting up sudo permissions for the web UI"
@@ -566,7 +690,8 @@ info "sudoers rule created: /etc/sudoers.d/photoframe"
 info "10/10 Enabling services"
 # ---------------------------------------------------------------------------
 systemctl daemon-reload
-systemctl enable photoframe-slideshow photoframe-sync.timer photoframe-webui
+systemctl enable photoframe-slideshow photoframe-sync.timer photoframe-webui \
+    photoframe-boot-splash
 # restart instead of start: reliably brings up both freshly installed
 # services and ones that were paused for the installation (step 0/10) -
 # and, on a reinstall (e.g. to roll out a fix), ensures that already
