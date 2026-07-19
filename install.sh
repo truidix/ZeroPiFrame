@@ -363,6 +363,19 @@ PYTHON="$VENV_DIR/bin/python3"
 #      photoframe-slideshow.service's ExecStartPre now just kills any
 #      still-running instance of this directly (a plain, imperative fix
 #      that sidesteps transaction-resolution timing altogether).
+#   4. Even with (3) fixed, journalctl showed the unit actually starting
+#      this time, but still exiting cleanly (status 0) after ~1.3s - the
+#      TTY fix from (2) didn't actually solve the "exits immediately"
+#      problem after all. Two corrections: "-T 1" is fbi's own "switch to
+#      VT 1 yourself" flag, not a display-count/timeout as previously
+#      assumed - redundant with, and possibly conflicting with, the
+#      TTYPath=/dev/tty1 systemd already sets up below. Removed it.
+#      Also: fbi likely treats a systemd-provided TTY (no shell, no job
+#      control) as "not really interactive" and exits rather than waiting
+#      for keyboard input that will never come. Rather than continuing to
+#      fight that detection, "-t <seconds>" tells fbi explicitly how long
+#      to hold the image via its own documented slideshow-timer behavior,
+#      sidestepping the interactive/non-interactive question entirely.
 cat > /etc/systemd/system/photoframe-boot-splash.service << 'EOF'
 [Unit]
 Description=Photoframe boot splash (hides console/systemd status messages during boot)
@@ -375,7 +388,11 @@ Type=simple
 # wait for the (by now, settled) framebuffer device rather than failing
 # outright on the rare chance it's still not there.
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 20); do [ -e /dev/fb0 ] && exit 0; sleep 0.5; done; exit 1'
-ExecStart=/bin/bash -c 'exec /usr/bin/fbi -T 1 -d /dev/fb0 -a --noverbose "$(/opt/photoframe/resolve-notice-image.sh booting)"'
+# -t 90 matches RuntimeMaxSec below - fbi holds the image via its own
+# slideshow timer instead of waiting on keyboard input from a terminal
+# nobody is typing into; RuntimeMaxSec/the slideshow's pkill will end it
+# sooner in the normal case anyway.
+ExecStart=/bin/bash -c 'exec /usr/bin/fbi -t 90 -d /dev/fb0 -a --noverbose "$(/opt/photoframe/resolve-notice-image.sh booting)"'
 Restart=no
 # Safety net: if the slideshow never actually starts (e.g. config.yaml
 # isn't filled in yet), don't leave this running forever - stop after a
