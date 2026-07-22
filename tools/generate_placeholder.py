@@ -6,10 +6,11 @@ src/translations/:
 
   - update-please-wait-<lang>.png : shown by install.sh (step 0b) while an
     install/update is running.
-  - booting-<lang>.png            : shown by photoframe-boot-splash.service
-    during boot, until the slideshow takes over the display.
-  - shutting-down-<lang>.png      : shown by the
-    /usr/lib/systemd/system-shutdown/ hook right before poweroff/reboot.
+  - booting-<lang>.png / shutting-down-<lang>.png : generated for a boot/
+    shutdown splash screen that was tried and then abandoned (see the
+    comment near the end of step 8/10 in install.sh) after repeated
+    on-device failures - currently unused by anything, left in place in
+    case a more reliable approach is implemented later.
 
 Run manually whenever the wording changes or a new language is added:
     python3 tools/generate_placeholder.py

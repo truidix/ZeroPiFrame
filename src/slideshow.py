@@ -8,17 +8,23 @@ slide_up, slide_down, wipe_left, ken_burns, zoom_in, dissolve
 
 import os
 import sys
+import gc
+import json
 import time
+import ctypes
 import math
 import random
 import signal
 import logging
 import subprocess
 from pathlib import Path
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 import yaml
 from PIL import Image, ImageOps, ImageFilter
+
+from hw import hdmi_audio_supported
 
 # pygame must be configured before it is imported
 os.environ.setdefault('SDL_VIDEODRIVER', 'kmsdrm')
@@ -34,6 +40,12 @@ import pygame
 CONFIG_PATH      = Path('/opt/photoframe/config.yaml')
 CACHE_DIR        = Path('/var/lib/photoframe/cache')
 PLACEHOLDER      = Path('/opt/photoframe/static/placeholder.png')
+CURRENT_STATE_PATH = Path('/var/lib/photoframe/current.json')
+# DRM connector name for VLC's --drm-vout-display (see play_video()) - per
+# Raspberry Pi's own documentation, "HDMI-A-1" is the single HDMI output on
+# a Zero/Zero 2 W/1/2/3 (Pi 4 and up have two and would need HDMI-A-2 for
+# the second port - not relevant for the Zero this project targets).
+VLC_DRM_DEVICE   = 'HDMI-A-1'
 SUPPORTED_IMAGES = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'}
 SUPPORTED_VIDEOS = {'.mp4', '.mkv', '.mov', '.avi', '.m4v', '.webm'}
 SUPPORTED        = SUPPORTED_IMAGES | SUPPORTED_VIDEOS
@@ -56,9 +68,11 @@ DEFAULT_CONFIG = {
         'ken_burns_zoom': 0.08,
         'shuffle': True,
         'fit_mode': 'contain',
+        'smart_fit_percent': 30,
         'background_color': '#000000',
         'video_enabled': True,
         'video_audio': False,
+        'video_player': 'mpv',
     }
 }
 
@@ -111,7 +125,8 @@ def pil_to_surface(pil_img: Image.Image) -> pygame.Surface:
     return pygame.image.frombuffer(pil_img.tobytes(), pil_img.size, 'RGB').copy()
 
 
-def load_and_fit(path: Path, w: int, h: int, fit_mode: str, bg: tuple) -> Image.Image:
+def load_and_fit(path: Path, w: int, h: int, fit_mode: str, bg: tuple,
+                 smart_fit_percent: int = 30) -> Image.Image:
     """Loads an image, corrects EXIF rotation and fits it to the screen.
 
     Uses PIL's draft() mode: JPEGs are decoded directly at a reduced
@@ -119,6 +134,16 @@ def load_and_fit(path: Path, w: int, h: int, fit_mode: str, bg: tuple) -> Image.
     at full resolution and downscaled afterwards. For modern phone photos
     (12-48 MP) this saves considerable CPU time on a Pi Zero 2 W and avoids
     a visible stutter on image change.
+
+    fit_mode == 'smart': a middle ground between "contain" (never crop,
+    can leave large bars - e.g. an upright photo on a widescreen display)
+    and "cover" (never show bars, but may crop away a large chunk of the
+    image to do it - e.g. cropping off a portrait photo's head/feet to
+    fill a widescreen display). smart_fit_percent (0-100) is the point in
+    between: 0 behaves exactly like "contain", 100 exactly like "cover",
+    and e.g. 30 zooms in only 30% of the way from one to the other -
+    shrinking the bars without cropping as aggressively as a full cover
+    would. Same idea as photOS's SMARTFIT setting.
     """
     img = Image.open(path)
     # draft() only has an effect for JPEG (a no-op for PNG/GIF/WebP/BMP) and
@@ -148,6 +173,27 @@ def load_and_fit(path: Path, w: int, h: int, fit_mode: str, bg: tuple) -> Image.
         cx  = (new_w - w) // 2
         cy  = (new_h - h) // 2
         img = img.crop((cx, cy, cx + w, cy + h))
+    elif fit_mode == 'smart':
+        scale_contain = min(w / img_w, h / img_h)
+        scale_cover   = max(w / img_w, h / img_h)
+        pct   = max(0, min(100, smart_fit_percent)) / 100
+        scale = scale_contain + (scale_cover - scale_contain) * pct
+        new_w = max(1, round(img_w * scale))
+        new_h = max(1, round(img_h * scale))
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        # Crop back down to at most screen size on whichever axis "cover"
+        # would have needed to crop - the other axis, if still smaller
+        # than the screen at this zoom level, is centered on a bg-colored
+        # canvas below, exactly like "contain" does.
+        if img.width > w or img.height > h:
+            cx = max(0, (img.width - w) // 2)
+            cy = max(0, (img.height - h) // 2)
+            img = img.crop((cx, cy, cx + min(w, img.width), cy + min(h, img.height)))
+        canvas = Image.new('RGB', (w, h), bg)
+        ox = (w - img.width)  // 2
+        oy = (h - img.height) // 2
+        canvas.paste(img, (ox, oy))
+        img = canvas
     else:  # contain
         img.thumbnail((w, h), Image.LANCZOS)
         canvas = Image.new('RGB', (w, h), bg)
@@ -182,6 +228,32 @@ def load_for_ken_burns(path: Path, canvas_w: int, canvas_h: int) -> Image.Image:
         pass
     img = ImageOps.exif_transpose(img)
     return img.convert('RGB')
+
+
+def _write_current_state(media_type: str, filename: str):
+    """Records what's currently being displayed, so the web UI's status
+    page can show a live preview of it.
+
+    Written atomically (temp file + rename) so the web UI - which reads
+    this independently and asynchronously, on its own request/poll cycle
+    - never sees a half-written file, regardless of exactly when a
+    request happens to land relative to a write here.
+
+    Best-effort only: a failure to write this (e.g. disk full) should
+    never interrupt the slideshow itself over what's purely a "nice to
+    have" status-page feature.
+    """
+    try:
+        CURRENT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = CURRENT_STATE_PATH.with_suffix('.tmp')
+        tmp.write_text(json.dumps({
+            'type': media_type,
+            'filename': filename,
+            'shown_at': datetime.now().isoformat(timespec='seconds'),
+        }))
+        tmp.replace(CURRENT_STATE_PATH)
+    except Exception as e:
+        log.warning(f'Could not write current-media state: {e}')
 
 
 def make_placeholder(w: int, h: int) -> pygame.Surface:
@@ -581,37 +653,158 @@ def display_ken_burns(screen, img_pil: Image.Image, duration_s: int,
 
 
 # ---------------------------------------------------------------------------
-# Video playback via mpv
+# Video playback via mpv / VLC / ZeroPlay
 # ---------------------------------------------------------------------------
 
-def play_video(path: Path, audio: bool) -> pygame.Surface:
-    """
-    Plays a video with mpv (directly on KMS/DRM).
-    pygame releases the DRM master, mpv takes over, and afterwards pygame
-    is reinitialized and a fresh screen is returned.
-    """
-    log.info(f'Video: {path.name}  [audio={audio}]')
+# VT this service's console normally runs on (standard default - not
+# changed by anything here). BLANK_VT is a dedicated, otherwise-unused VT
+# whose getty is masked in install.sh, so it always renders as plain
+# black - see play_video()'s use of both for why.
+CONSOLE_VT = 1
+BLANK_VT   = 7
 
-    # Release the pygame display so mpv can take over the DRM master
+# Cached after the first lookup (the connected display doesn't change at
+# runtime) so every video play doesn't re-read/re-parse the EDID.
+_audio_supported: bool | None = None
+
+
+def _cached_hdmi_audio_supported() -> bool:
+    global _audio_supported
+    if _audio_supported is None:
+        _audio_supported = hdmi_audio_supported()
+        if not _audio_supported:
+            log.info('Connected display does not declare HDMI audio support '
+                     '(EDID has no CTA-861 Audio Data Block) - video audio '
+                     'forced off regardless of the "Play audio" setting')
+    return _audio_supported
+
+
+def play_video(path: Path, audio: bool, player: str = 'mpv') -> pygame.Surface:
+    """
+    Plays a video with mpv, VLC, or ZeroPlay (directly on KMS/DRM, chosen
+    via the "video_player" config setting - see the web UI's Slideshow
+    tab). pygame releases the DRM master, the player takes over, and
+    afterwards pygame is reinitialized and a fresh screen is returned.
+
+    `audio` (the "Play audio" config setting) is overridden to False here,
+    for every player, if the connected display's EDID declares no audio
+    capability at all - confirmed on real hardware that in that case,
+    every audio-open attempt fails outright (ALSA error 524/ENOTSUPP)
+    regardless of player/config, so there is no point even trying; this
+    also protects against ZeroPlay's own separate bug where a failed
+    audio open blocks video playback entirely rather than degrading
+    gracefully. The web UI's Slideshow tab independently hides/disables
+    the "Play audio" toggle in this situation (see webui.py) - this check
+    here is the actual enforcement, not just a UI nicety, so playback
+    stays correct even for an unrefreshed page or a hand-edited
+    config.yaml.
+    """
+    audio = audio and _cached_hdmi_audio_supported()
+    log.info(f'Video: {path.name}  [audio={audio}, player={player}]')
+
+    # Switch to a dedicated, always-empty virtual terminal before
+    # releasing the display. In the brief gap between pygame giving up
+    # the DRM master here and the video player (below) acquiring it, the
+    # kernel's own text console is what's rendered on the actual screen -
+    # it's the fallback whenever no application currently holds DRM
+    # master. tty1's console output is deliberately left verbose (see
+    # install.sh's step 6/10 - boot-quieting flags were tried and
+    # reverted for unrelated reasons), so without this, every single
+    # video briefly flashes whatever's been printed to tty1 since boot.
+    # getty is masked on BLANK_VT (see install.sh) so it's always empty -
+    # switching to it just shows a plain black screen instead. Failures
+    # here are logged but never fatal - worst case is the console flash
+    # coming back, not a broken slideshow.
+    try:
+        subprocess.run(['chvt', str(BLANK_VT)], timeout=5)
+    except Exception as e:
+        log.warning(f'Could not switch to blank VT{BLANK_VT} before video: {e}')
+
+    # Release the pygame display so the video player can take over the DRM master
     pygame.display.quit()
 
-    cmd = [
-        'mpv',
-        '--vo=drm',
-        '--hwdec=v4l2m2m',    # Hardware decode (H.264) on RPi
-        '--fullscreen',
-        '--really-quiet',
-        '--no-terminal',
-        f'--ao={"alsa" if audio else "null"}',
-        str(path),
-    ]
+    # The video player and this Python process are briefly resident in
+    # memory at the same time on a device that's already tight on RAM
+    # (512 MB). CPython doesn't always hand freed memory back to the OS
+    # immediately (glibc's allocator keeps freed arenas around for reuse)
+    # - forcing a collection and an explicit malloc_trim right before the
+    # player starts gives it as much headroom as possible at exactly the
+    # moment it needs it. Safe to skip silently if unavailable (e.g. a
+    # non-glibc libc).
+    gc.collect()
+    try:
+        ctypes.CDLL('libc.so.6').malloc_trim(0)
+    except Exception:
+        pass
+
+    if player == 'vlc':
+        cmd = [
+            'cvlc', '--play-and-exit', '--quiet', '--fullscreen',
+            '--drm-vout-display', VLC_DRM_DEVICE,
+        ]
+        cmd += ['-A', 'alsa'] if audio else ['--no-audio']
+        cmd.append(str(path))
+    elif player == 'zeroplay':
+        # Deliberately NOT passing --audio-device (again). Confirmed
+        # on-device, twice, on two different videos: opening the correct
+        # device string explicitly ("hdmi:CARD=vc4hdmi,DEV=0") fails with
+        # ALSA error 524/ENOTSUPP every time - this isn't a fluke tied to
+        # the unrelated decoder-stall bug, the explicit-override code path
+        # itself just doesn't work on this hardware/kernel combination,
+        # full stop. ZeroPlay's own auto-detection guesses a wrong card
+        # name ("vc4hdmi0") and prints a noisier ALSA "cannot find card"
+        # cascade, but at least degrades gracefully to no-audio afterwards
+        # instead of a harder failure - the lesser evil until/unless this
+        # gets fixed upstream.
+        # --verbose: prints ZeroPlay's own decoder/DRM driver diagnostics
+        # (container/codec/resolution detected, hardware decoder opened,
+        # display initialised, etc.) straight into this service's own log
+        # (photoframe-slideshow.log, via the systemd unit's
+        # StandardOutput/StandardError redirection) - a one-line startup
+        # summary per README, not a per-frame firehose, so safe to leave
+        # on permanently rather than only during manual troubleshooting.
+        cmd = ['zeroplay', '--verbose']
+        if not audio:
+            cmd.append('--no-audio')
+        cmd.append(str(path))
+    else:
+        cmd = [
+            'mpv',
+            '--vo=drm',
+            '--hwdec=v4l2m2m',    # Hardware decode (H.264) on RPi
+            '--fullscreen',
+            '--really-quiet',
+            '--no-terminal',
+            # Bounds mpv's own demuxer read-ahead cache, so its memory use
+            # stays predictable regardless of the video's bitrate/container
+            # instead of scaling up with however much mpv decides to buffer.
+            # The slideshow only ever plays forward - there is no rewinding -
+            # so the back-buffer (kept purely for backward seeking) is trimmed
+            # to a minimum rather than the demuxer default, freeing a few more
+            # MiB of headroom on a device that's already tight on RAM.
+            '--demuxer-max-bytes=32MiB',
+            '--demuxer-max-back-bytes=1MiB',
+            f'--ao={"alsa" if audio else "null"}',
+            str(path),
+        ]
 
     try:
         subprocess.run(cmd, timeout=3600)   # max 1h safety timeout
     except subprocess.TimeoutExpired:
         log.warning(f'Video timeout exceeded: {path.name}')
     except FileNotFoundError:
-        log.error('mpv not found - sudo apt install mpv')
+        hint = {'vlc': 'sudo apt install vlc-bin vlc-plugin-base',
+                'zeroplay': 'see install.sh / https://github.com/HorseyofCoursey/zeroplay - not packaged in apt, built from source'
+                }.get(player, 'sudo apt install mpv')
+        log.error(f'{cmd[0]} not found - {hint}')
+
+    # Switch back to the console's own VT before pygame reclaims the
+    # display - covers the second half of the same gap (player has
+    # exited and released DRM master, pygame hasn't grabbed it back yet).
+    try:
+        subprocess.run(['chvt', str(CONSOLE_VT)], timeout=5)
+    except Exception as e:
+        log.warning(f'Could not switch back to VT{CONSOLE_VT} after video: {e}')
 
     # Reinitialize the pygame display
     pygame.display.init()
@@ -732,9 +925,14 @@ def run():
     log.info('Starting slideshow')
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Initialize pygame
+    # Initialize pygame - deliberately NOT the blanket pygame.init(), which
+    # would also start the audio/mixer and joystick subsystems. Neither is
+    # ever used here (video audio goes through mpv's own --ao flag, not
+    # pygame.mixer) - on a Pi Zero 2 W with only 512 MB RAM, the unused
+    # audio subsystem's own thread/buffers (seen directly triggering an
+    # OOM kill on-device) are memory spent for nothing.
     try:
-        pygame.init()
+        pygame.display.init()
         pygame.font.init()
         screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN | pygame.NOFRAME)
         pygame.mouse.set_visible(False)
@@ -781,6 +979,7 @@ def run():
             t_dur   = sl.get('transition_duration_ms', 1500)
             interval = sl.get('interval_seconds', 30)
             fit     = sl.get('fit_mode', 'contain')
+            smart_fit_percent = sl.get('smart_fit_percent', 30)
             bg      = hex_to_rgb(sl.get('background_color', '#000000'))
             kb_zoom = sl.get('ken_burns_zoom', 0.08)
             kb_extra = 1.0 + max(0.04, kb_zoom)
@@ -789,11 +988,13 @@ def run():
             shuffle = sl.get('shuffle', True)
             video_enabled = sl.get('video_enabled', True)
             video_audio   = sl.get('video_audio', False)
+            video_player  = sl.get('video_player', 'mpv')
 
             images = get_media_list(video_enabled)
 
             if not images:
                 log.info('No cache - showing placeholder')
+                _write_current_state('placeholder', '')
                 screen.blit(make_placeholder(W, H), (0, 0))
                 pygame.display.flip()
                 time.sleep(15)
@@ -815,6 +1016,7 @@ def run():
                     t_dur    = sl.get('transition_duration_ms', 1500)
                     interval = sl.get('interval_seconds', 30)
                     fit      = sl.get('fit_mode', 'contain')
+                    smart_fit_percent = sl.get('smart_fit_percent', 30)
                     bg       = hex_to_rgb(sl.get('background_color', '#000000'))
                     kb_zoom  = sl.get('ken_burns_zoom', 0.08)
                     kb_extra = 1.0 + max(0.04, kb_zoom)
@@ -823,6 +1025,7 @@ def run():
                     shuffle  = sl.get('shuffle', True)
                     video_enabled = sl.get('video_enabled', True)
                     video_audio   = sl.get('video_audio', False)
+                    video_player  = sl.get('video_player', 'mpv')
 
                 # Process pygame events
                 for event in pygame.event.get():
@@ -835,8 +1038,9 @@ def run():
 
                 # --- Video ---
                 if media_path.suffix.lower() in SUPPORTED_VIDEOS:
+                    _write_current_state('video', media_path.name)
                     try:
-                        screen = play_video(media_path, video_audio)
+                        screen = play_video(media_path, video_audio, video_player)
                         W, H = screen.get_size()
                         current_surf = pygame.Surface((W, H))
                         current_surf.fill((0, 0, 0))
@@ -877,7 +1081,7 @@ def run():
                         if t_name == 'ken_burns':
                             img_pil = load_for_ken_burns(media_path, canvas_w, canvas_h)
                         else:
-                            img_pil = load_and_fit(media_path, W, H, fit, bg)
+                            img_pil = load_and_fit(media_path, W, H, fit, bg, smart_fit_percent)
                     except Exception as e:
                         log.warning(f'Image not loadable {media_path.name}: {e}')
                         current_t_name = None
@@ -903,6 +1107,7 @@ def run():
                         recent_shown = recent_shown[-cap:]
 
                 log.info(f'Showing: {media_path.name}  [{t_name}]')
+                _write_current_state('image', media_path.name)
 
                 # The actual display (Ken Burns or a blit transition) is
                 # deliberately safeguarded separately: a single faulty

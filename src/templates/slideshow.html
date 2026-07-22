@@ -92,15 +92,27 @@
   <div class="card mt">
     <div class="card-label">{{ t('slideshow_page.fit_heading') }}</div>
     <label class="radio-option">
-      <input type="radio" name="fit_mode" value="contain"
+      <input type="radio" name="fit_mode" value="contain" id="fit-contain-radio"
              {% if sl.get('fit_mode','contain') == 'contain' %}checked{% endif %}>
       <span>{{ t('slideshow_page.fit_contain') }}</span>
     </label>
     <label class="radio-option">
-      <input type="radio" name="fit_mode" value="cover"
+      <input type="radio" name="fit_mode" value="cover" id="fit-cover-radio"
              {% if sl.get('fit_mode') == 'cover' %}checked{% endif %}>
       <span>{{ t('slideshow_page.fit_cover') }}</span>
     </label>
+    <label class="radio-option">
+      <input type="radio" name="fit_mode" value="smart" id="fit-smart-radio"
+             {% if sl.get('fit_mode') == 'smart' %}checked{% endif %}>
+      <span>{{ t('slideshow_page.fit_smart') }}</span>
+    </label>
+    <div id="smart-fit-row" class="mt-sm">
+      <label>{{ t('slideshow_page.smart_fit_label') }}
+        <input type="number" name="smart_fit_percent" min="0" max="100"
+               value="{{ sl.get('smart_fit_percent', 30) }}"> %
+      </label>
+      <small>{{ t('slideshow_page.smart_fit_hint') }}</small>
+    </div>
   </div>
 
   <div class="card mt">
@@ -118,13 +130,40 @@
       {{ t('slideshow_page.video_enable_label') }}
     </label>
     <div id="audio-row">
+      {% if audio_supported %}
       <label class="checkbox-label" style="margin-top:0.5rem">
         <input type="checkbox" name="video_audio"
                {% if sl.get('video_audio', False) %}checked{% endif %}>
         {{ t('slideshow_page.video_audio_label') }}
       </label>
       <small>{{ t('slideshow_page.video_audio_hint') }}</small>
+      {% else %}
+      <label class="checkbox-label" style="margin-top:0.5rem; opacity:0.5">
+        <input type="checkbox" name="video_audio" disabled>
+        {{ t('slideshow_page.video_audio_label') }}
+      </label>
+      <small>{{ t('slideshow_page.video_audio_unsupported_hint') }}</small>
+      {% endif %}
     </div>
+    <div id="video-player-row" class="mt-sm">
+      <label>{{ t('slideshow_page.video_player_label') }}
+        <select name="video_player">
+          <option value="mpv" {% if sl.get('video_player', 'mpv') == 'mpv' %}selected{% endif %}>mpv</option>
+          <option value="vlc" {% if sl.get('video_player') == 'vlc' %}selected{% endif %}>VLC</option>
+          <option value="zeroplay" {% if sl.get('video_player') == 'zeroplay' %}selected{% endif %}>ZeroPlay</option>
+        </select>
+      </label>
+      <small>{{ t('slideshow_page.video_player_hint') }}</small>
+    </div>
+  </div>
+
+  <div class="card mt">
+    <div class="card-label">{{ t('slideshow_page.cache_mgmt_heading') }}</div>
+    <p class="text-muted">{{ t('slideshow_page.clear_cache_desc') }}</p>
+    <button type="button" class="btn btn-danger" onclick="clearCache()">
+      {{ t('slideshow_page.clear_cache_btn') }}
+    </button>
+    <div id="cache-result" class="test-result mt-sm"></div>
   </div>
 
   <div class="action-row mt">
@@ -135,6 +174,19 @@
 
 {% block scripts %}
 <script>
+const T = {
+  clearCacheConfirm: {{ t('slideshow_page.clear_cache_confirm')|tojson }},
+};
+
+async function clearCache() {
+  if (!confirm(T.clearCacheConfirm)) return;
+  const r = await fetch('/api/clear_cache', {method: 'POST'});
+  const d = await r.json();
+  const el = document.getElementById('cache-result');
+  el.textContent = d.message;
+  el.className   = 'test-result ' + (d.ok ? 'result-ok' : 'result-err');
+}
+
 function checkedTransitions() {
   return Array.from(document.querySelectorAll('input[name="enabled_transitions"]:checked'))
                .map(el => el.value);
@@ -176,13 +228,24 @@ document.querySelector('form').addEventListener('submit', (e) => {
   }
 });
 
-// Only show the audio row when video is enabled
+// Only show the audio row and player choice when video is enabled
 const videoToggle = document.getElementById('video-enabled-toggle');
 function updateAudioRow() {
-  document.getElementById('audio-row').style.opacity = videoToggle.checked ? '1' : '0.35';
-  document.getElementById('audio-row').style.pointerEvents = videoToggle.checked ? '' : 'none';
+  ['audio-row', 'video-player-row'].forEach(function(id) {
+    document.getElementById(id).style.opacity = videoToggle.checked ? '1' : '0.35';
+    document.getElementById(id).style.pointerEvents = videoToggle.checked ? '' : 'none';
+  });
 }
 videoToggle.addEventListener('change', updateAudioRow);
 updateAudioRow();
+
+// Only show the smart-fit percentage field when "Smart" is the selected fit mode
+const fitRadios = document.querySelectorAll('input[name="fit_mode"]');
+function updateSmartFitRow() {
+  const smartSelected = document.getElementById('fit-smart-radio').checked;
+  document.getElementById('smart-fit-row').style.display = smartSelected ? '' : 'none';
+}
+fitRadios.forEach(function(r) { r.addEventListener('change', updateSmartFitRow); });
+updateSmartFitRow();
 </script>
 {% endblock %}

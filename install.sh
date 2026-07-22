@@ -7,6 +7,15 @@
 #   - Boot partition is located under /boot/firmware/ (not /boot/)
 #   - Python 3.13: pip uses virtualenv instead of --break-system-packages
 #   - pygame is installed as a system package, venv with --system-site-packages
+#
+# Quick code deploy (no apt/venv/ZeroPlay build - just for iterating on
+# slideshow.py/sync.py/webui.py/templates/translations without waiting
+# through the full install every time):
+#   sudo bash install.sh --deploy
+# Only use this once a full install has already been run at least once
+# (needs the venv/systemd units/config from that to already exist). If
+# requirements.txt changed, or you need the ZeroPlay/apt packages
+# refreshed, run the full install instead.
 
 set -e
 
@@ -16,6 +25,20 @@ warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
 [[ $EUID -ne 0 ]] && error "Please run as root: sudo bash install.sh"
+
+# --deploy can appear anywhere in the arguments (before or after the
+# optional username) - pulled out here so the username positional
+# argument below still works unchanged either way.
+DEPLOY_MODE=0
+ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == "--deploy" ]]; then
+        DEPLOY_MODE=1
+    else
+        ARGS+=("$arg")
+    fi
+done
+set -- "${ARGS[@]}"
 
 # Username: passed explicitly or derived from SUDO_USER
 # Usage:  sudo bash install.sh [username]
@@ -29,6 +52,48 @@ VENV_DIR="$INSTALL_DIR/venv"
 CACHE_DIR="/var/lib/photoframe/cache"
 LOG_DIR="/var/log"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)/src"
+
+# ---------------------------------------------------------------------------
+# Deploy mode: copy the changed source files onto an already-installed
+# system and restart the two long-running services (slideshow, web UI) so
+# they pick up the new code - skips apt-get, the venv/pip install, the
+# ZeroPlay source build, and every boot/config.txt/systemd-unit change,
+# which are the slow parts and don't need to be redone just because a
+# .py/.html/.json file changed. photoframe-sync doesn't need a restart
+# here: it's a systemd oneshot triggered fresh by the timer each run, so
+# simply having the updated sync.py in place is enough for its next run.
+# ---------------------------------------------------------------------------
+if [[ "$DEPLOY_MODE" -eq 1 ]]; then
+    [[ -d "$INSTALL_DIR" && -x "$VENV_DIR/bin/python3" ]] || \
+        error "$INSTALL_DIR (or its venv) doesn't exist yet - run a full install first: sudo bash install.sh"
+
+    info "Deploy: copying source files"
+    cp "$SCRIPT_DIR/slideshow.py"          "$INSTALL_DIR/"
+    cp "$SCRIPT_DIR/sync.py"               "$INSTALL_DIR/"
+    cp "$SCRIPT_DIR/webui.py"              "$INSTALL_DIR/"
+    cp "$SCRIPT_DIR/i18n.py"               "$INSTALL_DIR/"
+    cp "$SCRIPT_DIR/hw.py"                 "$INSTALL_DIR/"
+    cp "$SCRIPT_DIR/templates/"*.html     "$INSTALL_DIR/templates/"
+    cp "$SCRIPT_DIR/static/"*.css         "$INSTALL_DIR/static/"
+    cp "$SCRIPT_DIR/translations/"*.json  "$INSTALL_DIR/translations/"
+
+    chown -R "$FRAME_USER:$FRAME_USER" "$INSTALL_DIR"
+    chmod -R 755 "$INSTALL_DIR"
+
+    info "Deploy: restarting services"
+    systemctl daemon-reload
+    systemctl restart photoframe-webui
+    # Only bounce the slideshow if it's actually supposed to be running -
+    # a deploy shouldn't be what turns it on for someone who deliberately
+    # disabled it.
+    if systemctl is-enabled --quiet photoframe-slideshow 2>/dev/null || \
+       systemctl is-active  --quiet photoframe-slideshow 2>/dev/null; then
+        systemctl restart photoframe-slideshow
+    fi
+
+    info "Deploy complete - slideshow and web UI are running the updated code"
+    exit 0
+fi
 
 # Trixie: boot partition under /boot/firmware/
 BOOT_DIR="/boot/firmware"
@@ -87,7 +152,17 @@ if [[ "$SLIDESHOW_WAS_ACTIVE" -eq 1 ]]; then
     NOTICE_IMAGE="$SCRIPT_DIR/assets/update-please-wait-$NOTICE_LANG.png"
     [[ -f "$NOTICE_IMAGE" ]] || NOTICE_IMAGE="$SCRIPT_DIR/assets/update-please-wait-en.png"
     if command -v fbi &>/dev/null && [[ -e /dev/fb0 ]]; then
-        fbi -T 1 -d /dev/fb0 -a --noverbose \
+        # -t + -1 bound fbi's own runtime as a hard safety net: if this
+        # script's SSH session drops abruptly (so the EXIT trap below never
+        # runs), fbi would otherwise sit on /dev/fb0 forever as an orphaned,
+        # root-owned process - permanently stuck showing the notice image
+        # even after the slideshow tries to take over the framebuffer again.
+        # With only one image, -t alone just redisplays it forever every
+        # 900s without ever exiting; -1/--once tells fbi not to loop, so it
+        # quits once that single interval elapses. 900s (15 min) comfortably
+        # covers a normal install (incl. slow apt-get on poor WiFi) while
+        # still bounding the worst case.
+        fbi -T 1 -t 900 -1 -d /dev/fb0 -a --noverbose \
             "$NOTICE_IMAGE" \
             < /dev/null > /tmp/photoframe-fbi.log 2>&1 &
         FBI_PID=$!
@@ -108,21 +183,69 @@ info "1/10 Installing system packages"
 # ---------------------------------------------------------------------------
 apt-get update -qq
 
-# fbi: needed unconditionally now, not just for step 0b's own use during a
-# reinstall - photoframe-boot-splash.service, the shutdown splash hook, and
-# the initramfs boot splash hook (further below) all depend on it being
-# present on every real boot from here on, including after a first-time
-# install where step 0b's own conditional install never triggers (nothing
-# was running yet to show a notice image over).
+# fbi: installed unconditionally so it's already present the next time
+# step 0b needs it (on a future reinstall/update where the slideshow is
+# actively running) - step 0b's own conditional apt-get install only
+# covers that one run, not any run after it.
 apt-get install -y \
     python3 python3-pip python3-venv \
     python3-pygame \
     python3-yaml \
     mpv \
+    vlc-bin vlc-plugin-base \
+    ffmpeg \
     iw \
     git curl avahi-daemon \
     fbi \
     --no-install-recommends
+
+# ZeroPlay: a third video player option (alongside mpv/vlc, selectable in
+# the web UI) - a lightweight, modern V4L2 M2M + DRM/KMS replacement for
+# the deprecated omxplayer, purpose-built for exactly this device/OS combo
+# rather than a general-purpose player where headless DRM output is a
+# secondary feature (which is where VLC's playback-pacing bug turned up).
+# Not packaged in apt - built from source here using the project's own
+# documented manual-build steps (its README also offers a curl|bash
+# installer, skipped in favor of the same auditable approach the rest of
+# this script uses). Best-effort: mpv/VLC stay available and remain
+# selectable either way, so a build failure here (e.g. a transient
+# network hiccup cloning the repo) shouldn't abort the whole install.
+apt-get install -y --no-install-recommends \
+    gcc make pkgconf \
+    libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libswscale-dev \
+    libdrm-dev libasound2-dev libcjson-dev libfreetype-dev \
+    || warn "Could not install ZeroPlay build dependencies - ZeroPlay will not be available"
+
+# libfreetype-dev above only provides the headers ZeroPlay needs to build
+# WITH font support - it does not itself install any actual font files.
+# Without the .ttf file ZeroPlay expects to find at runtime
+# (/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf), it silently
+# falls back to its built-in bitmap font for subtitles - harmless, but
+# logs a "cannot load ... using bitmap font" line on every single video.
+# fonts-dejavu-core is the actual font package, separate from the -dev
+# build dependency above.
+apt-get install -y --no-install-recommends fonts-dejavu-core \
+    || warn "Could not install fonts-dejavu-core - ZeroPlay will use its bitmap font fallback for subtitles"
+
+ZEROPLAY_SRC=/opt/photoframe-build/zeroplay
+if command -v gcc &>/dev/null && command -v make &>/dev/null; then
+    mkdir -p "$(dirname "$ZEROPLAY_SRC")"
+    : > /tmp/photoframe-zeroplay-build.log
+    if [[ -d "$ZEROPLAY_SRC/.git" ]]; then
+        git -C "$ZEROPLAY_SRC" pull --ff-only >> /tmp/photoframe-zeroplay-build.log 2>&1
+    else
+        rm -rf "$ZEROPLAY_SRC"
+        git clone --depth 1 https://github.com/HorseyofCoursey/zeroplay.git "$ZEROPLAY_SRC" \
+            >> /tmp/photoframe-zeroplay-build.log 2>&1
+    fi
+    if [[ -d "$ZEROPLAY_SRC" ]] && (cd "$ZEROPLAY_SRC" \
+            && make >> /tmp/photoframe-zeroplay-build.log 2>&1 \
+            && make install >> /tmp/photoframe-zeroplay-build.log 2>&1); then
+        info "ZeroPlay built and installed ($(command -v zeroplay || echo /usr/local/bin/zeroplay))"
+    else
+        warn "ZeroPlay build failed - see /tmp/photoframe-zeroplay-build.log - mpv/VLC remain available"
+    fi
+fi
 
 # vcgencmd (HDMI display_power on/off, used by the display schedule) shipped
 # in libraspberrypi-bin on Bookworm; on Trixie that package was split into
@@ -147,56 +270,20 @@ command -v vcgencmd &>/dev/null || \
 # ---------------------------------------------------------------------------
 info "2/10 Installing files"
 # ---------------------------------------------------------------------------
-mkdir -p "$INSTALL_DIR/templates" "$INSTALL_DIR/static" "$INSTALL_DIR/assets" \
+mkdir -p "$INSTALL_DIR/templates" "$INSTALL_DIR/static" \
          "$INSTALL_DIR/translations" "$CACHE_DIR"
 
 cp "$SCRIPT_DIR/slideshow.py"          "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/sync.py"               "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/webui.py"              "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/i18n.py"               "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/hw.py"                 "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/templates/"*.html     "$INSTALL_DIR/templates/"
 cp "$SCRIPT_DIR/static/"*.css         "$INSTALL_DIR/static/"
 cp "$SCRIPT_DIR/translations/"*.json  "$INSTALL_DIR/translations/"
 cp "$(dirname "$0")/requirements.txt" "$INSTALL_DIR/"
 
-# Boot/shutdown/update notice images - the boot-splash service and the
-# system-shutdown hook (set up below) run long after install.sh itself has
-# exited, so unlike the update-notice image in step 0b (read straight from
-# $SCRIPT_DIR while the installer is still running), these need to actually
-# live under $INSTALL_DIR to still be there later.
-cp "$SCRIPT_DIR/assets/"*.png "$INSTALL_DIR/assets/"
-
 touch "$INSTALL_DIR/static/placeholder.png"
-
-# Resolves the notice image matching the configured UI language (falls
-# back to English) - shared by photoframe-boot-splash.service and the
-# system-shutdown hook script, both set up below. install.sh's own step 0b
-# above does NOT use this: it has to be self-contained since it runs
-# during the install/update itself, potentially before this file exists
-# yet on a first install.
-cat > "$INSTALL_DIR/resolve-notice-image.sh" << 'EOF'
-#!/bin/bash
-# Usage: resolve-notice-image.sh <basename>
-#   e.g. resolve-notice-image.sh booting
-#        -> /opt/photoframe/assets/booting-de.png (or -en.png as fallback)
-set -euo pipefail
-
-BASENAME="${1:?Usage: resolve-notice-image.sh <basename>}"
-ASSETS_DIR="/opt/photoframe/assets"
-CONFIG="/opt/photoframe/config.yaml"
-
-LANG_CODE="en"
-if [[ -f "$CONFIG" ]]; then
-    CONFIGURED_LANG="$(grep -m1 '^language:' "$CONFIG" 2>/dev/null \
-        | sed -E "s/^language:[[:space:]]*[\"']?([A-Za-z_-]+)[\"']?.*/\1/")"
-    [[ -n "$CONFIGURED_LANG" ]] && LANG_CODE="$CONFIGURED_LANG"
-fi
-
-IMAGE="$ASSETS_DIR/$BASENAME-$LANG_CODE.png"
-[[ -f "$IMAGE" ]] || IMAGE="$ASSETS_DIR/$BASENAME-en.png"
-echo "$IMAGE"
-EOF
-chmod 755 "$INSTALL_DIR/resolve-notice-image.sh"
 
 chmod -R 755 "$INSTALL_DIR"
 
@@ -234,6 +321,12 @@ info "5/10 Setting user permissions"
 usermod -aG video,render "$FRAME_USER" 2>/dev/null || true
 
 chown -R "$FRAME_USER:$FRAME_USER" "$CACHE_DIR"
+# The parent of $CACHE_DIR (/var/lib/photoframe) is where slideshow.py
+# also writes current.json (the "currently displayed" status-page state
+# file) - chown -R above only covers $CACHE_DIR itself, not its parent,
+# which was otherwise left root-owned from the mkdir -p in step 2/10,
+# causing a permission-denied on every single image/video change.
+chown "$FRAME_USER:$FRAME_USER" "$(dirname "$CACHE_DIR")"
 chown -R "$FRAME_USER:$FRAME_USER" "$INSTALL_DIR"
 
 touch "$LOG_DIR/photoframe-sync.log"
@@ -246,26 +339,43 @@ info "6/10 Configuring console / framebuffer"
 # ---------------------------------------------------------------------------
 systemctl disable getty@tty1 2>/dev/null || true
 
-# Kernel/systemd boot and shutdown messages otherwise print straight to the
-# framebuffer console (tty1) - the same one photoframe-boot-splash.service
-# and the shutdown splash draw to. Quieting them down here is what actually
-# keeps that text off the screen; the splash images (below) then have a
-# blank/idle console to draw over instead of scrolling log lines.
+# Reserves VT7 as a permanently empty "blank" console - slideshow.py
+# switches to it for the brief moment around every video (pygame
+# releasing/reclaiming the DRM master) instead of letting tty1's
+# deliberately-verbose console text flash on screen during normal
+# playback (see slideshow.py's play_video() for the actual chvt calls).
+# Masking (not just disabling) also blocks systemd's autovt@ mechanism,
+# which would otherwise auto-spawn a getty here the first time anything
+# switches to this VT.
+systemctl mask --now getty@tty7.service autovt@tty7.service 2>/dev/null || true
+
+# An earlier version of this script quieted the kernel/systemd boot and
+# shutdown messages on the framebuffer console (tty1) via cmdline.txt
+# flags (vt.global_cursor_default=0, quiet, loglevel=3, logo.nologo,
+# consoleblank=0, systemd.show_status=0), meant to be covered by a
+# dedicated boot/shutdown splash image. That splash was tried and then
+# abandoned (see the comment near the end of step 8/10) after repeated
+# on-device failures - so quieting the console just left it blank with
+# nothing to look at instead, which isn't wanted on its own. Removes those
+# flags again (on a reinstall/update of a Pi that still has them from an
+# older install) to restore the normal, verbose console output.
 CMDLINE="$BOOT_DIR/cmdline.txt"
 if [[ -f "$CMDLINE" ]]; then
-    for flag in \
-        "vt.global_cursor_default=0" \
-        "quiet" \
-        "loglevel=3" \
-        "logo.nologo" \
-        "consoleblank=0" \
-        "systemd.show_status=0"
-    do
-        if ! grep -q "$flag" "$CMDLINE"; then
-            sed -i "s/\$/ $flag/" "$CMDLINE"
-            info "cmdline.txt: added '$flag' (takes effect after reboot)"
-        fi
+    ORIG_LINE="$(cat "$CMDLINE")"
+    NEW_LINE=""
+    for word in $ORIG_LINE; do
+        case "$word" in
+            "vt.global_cursor_default=0"|"quiet"|"loglevel=3"|"logo.nologo"|"consoleblank=0"|"systemd.show_status=0")
+                continue ;;
+        esac
+        NEW_LINE+="$word "
     done
+    NEW_LINE="${NEW_LINE% }"
+    if [[ "$NEW_LINE" != "$ORIG_LINE" ]]; then
+        cp "$CMDLINE" "$CMDLINE.photoframe-quiet.bak"
+        printf '%s\n' "$NEW_LINE" > "$CMDLINE"
+        info "cmdline.txt: removed boot-quieting flags (splash feature abandoned) - reboot to see normal console output again (backup: $CMDLINE.photoframe-quiet.bak)"
+    fi
 fi
 
 CONFIG="$BOOT_DIR/config.txt"
@@ -282,26 +392,56 @@ if [[ -f "$CONFIG" ]]; then
     grep -q "^hdmi_force_hotplug=1" "$CONFIG" || echo "hdmi_force_hotplug=1" >> "$CONFIG"
     grep -q "^disable_overscan=1"  "$CONFIG" || echo "disable_overscan=1"  >> "$CONFIG"
     grep -q "^disable_splash=1"    "$CONFIG" || echo "disable_splash=1"    >> "$CONFIG"
+    # Bluetooth isn't used by this project - disabling it at the hardware
+    # level frees a little RAM (bluetoothd + hciuart, otherwise running
+    # for nothing) and one less thing competing for CPU/power on an
+    # already RAM-constrained device. Modest savings on their own, but a
+    # free win with no downside if you don't need BT.
+    grep -q "^dtoverlay=disable-bt" "$CONFIG" || echo "dtoverlay=disable-bt" >> "$CONFIG"
     info "config.txt adjusted (backup: $CONFIG.photoframe.bak)"
 else
     warn "$CONFIG not found - check vc4-kms-v3d manually"
     warn "If no picture appears: set SDL_VIDEODRIVER=fbcon in the service files"
 fi
 
+systemctl disable --now hciuart.service bluetooth.service 2>/dev/null || true
+systemctl mask hciuart.service bluetooth.service 2>/dev/null || true
+# mpris-proxy (BlueZ's Bluetooth-media-to-D-Bus bridge) is a separate,
+# per-user systemd unit - NOT gated by bluetooth.service/hciuart.service
+# above, so it was still starting (and showing up as an OOM victim) even
+# with those masked. --global masks it for every user's session, present
+# and future.
+systemctl --global mask mpris-proxy.service 2>/dev/null || true
+
 # ---------------------------------------------------------------------------
 info "7/10 Swap & WiFi power-save mode (512 MB RAM is tight)"
 # ---------------------------------------------------------------------------
 # Decoding large photos with Pillow, plus pygame, Flask, and occasionally
-# mpv all at once can get tight on a Zero 2 W with 512 MB RAM. A bit of
-# swap as a safety net against OOM kills is cheaper than a crashing service.
-if [[ -f /etc/dphys-swapfile ]]; then
-    sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=512/' /etc/dphys-swapfile
-    grep -q "^CONF_SWAPSIZE=" /etc/dphys-swapfile || echo "CONF_SWAPSIZE=512" >> /etc/dphys-swapfile
+# mpv all at once can get tight on a Zero 2 W with 512 MB RAM - confirmed
+# on-device via dmesg OOM kills of the slideshow process. More swap
+# headroom helps before the kernel OOM killer triggers at all.
+#
+# Raspberry Pi OS Trixie replaced the classic dphys-swapfile mechanism
+# with "rpi-swap" (compressed RAM-based swap via zram, config under
+# /etc/rpi/swap.conf.d/) - /etc/dphys-swapfile no longer exists there at
+# all, so the old sed-based approach silently did nothing on Trixie.
+# Bookworm and older still use dphys-swapfile, so both are handled here.
+if [[ -f /etc/rpi/swap.conf ]] || dpkg -s rpi-swap &>/dev/null; then
+    mkdir -p /etc/rpi/swap.conf.d
+    cat > /etc/rpi/swap.conf.d/photoframe.conf << 'EOF'
+[Zram]
+RamMultiplier=2
+MaxSizeMiB=1024
+EOF
+    info "rpi-swap (zram) configured for up to ~1024 MB - takes effect after a reboot (zram is set up by a generator at early boot, daemon-reload alone isn't enough)"
+elif [[ -f /etc/dphys-swapfile ]]; then
+    sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile
+    grep -q "^CONF_SWAPSIZE=" /etc/dphys-swapfile || echo "CONF_SWAPSIZE=1024" >> /etc/dphys-swapfile
     dphys-swapfile setup  >/dev/null 2>&1 || true
     systemctl restart dphys-swapfile 2>/dev/null || true
-    info "Swap set to 512 MB"
+    info "Swap set to 1024 MB (dphys-swapfile)"
 else
-    warn "dphys-swapfile not found - set up swap manually if RAM gets tight"
+    warn "No known swap mechanism (rpi-swap or dphys-swapfile) found - set up swap manually if RAM gets tight"
 fi
 
 # The Zero 2 W has no Ethernet - WiFi power-save otherwise causes
@@ -328,91 +468,17 @@ info "8/10 Setting up systemd services"
 # ---------------------------------------------------------------------------
 PYTHON="$VENV_DIR/bin/python3"
 
-# Shows a "starting up" notice image over the framebuffer from early in
-# boot until photoframe-slideshow.service takes over the display - covers
-# the stretch of boot where systemd/kernel status messages would
-# otherwise be the only thing on screen.
-#
-# Three real issues were found via on-device diagnostics after this
-# repeatedly failed/misbehaved on actual hardware:
-#   1. dmesg showed TWO framebuffers registering as fb0 in sequence - a
-#      firmware-provided "simple-framebuffer" at ~1.8s, then the real
-#      vc4-drm framebuffer ("vc4drmfb") at ~12.2s. Starting right after
-#      local-fs.target risked racing that handoff. Fixed by also waiting
-#      for systemd-udev-settle.service, the same dependency
-#      photoframe-slideshow.service already uses without issue - by then
-#      the swap has long completed and fb0 is the real, final device.
-#   2. journalctl showed fbi starting, loading its font, and then
-#      "Deactivated successfully" about a second later - it was exiting
-#      almost immediately rather than staying up. fbi is built as an
-#      interactive console viewer; with no controlling terminal (the
-#      systemd default) and stdin explicitly </dev/null, it likely read
-#      EOF right away and quit. Fixed with TTYPath=/dev/tty1 +
-#      StandardInput=tty, so fbi has an actual terminal to hold.
-#   3. With (1) and (2) fixed, the unit showed "inactive (dead)" with ZERO
-#      log entries - never even attempted to start. Root cause: it
-#      previously had Conflicts=photoframe-slideshow.service on both
-#      units, intended to make systemd auto-stop this one once the
-#      slideshow starts. But systemd computes the ENTIRE boot transaction
-#      up front (sysinit.target's wants and multi-user.target's wants
-#      together, not incrementally) - when two jobs in the same
-#      transaction conflict, systemd resolves it by dropping whichever
-#      job isn't required elsewhere, which is this one (nothing requires
-#      it; multi-user.target does require the slideshow). So it never got
-#      a start job in the first place. Conflicts= removed entirely;
-#      photoframe-slideshow.service's ExecStartPre now just kills any
-#      still-running instance of this directly (a plain, imperative fix
-#      that sidesteps transaction-resolution timing altogether).
-#   4. Even with (3) fixed, journalctl showed the unit actually starting
-#      this time, but still exiting cleanly (status 0) after ~1.3s - the
-#      TTY fix from (2) didn't actually solve the "exits immediately"
-#      problem after all. Two corrections: "-T 1" is fbi's own "switch to
-#      VT 1 yourself" flag, not a display-count/timeout as previously
-#      assumed - redundant with, and possibly conflicting with, the
-#      TTYPath=/dev/tty1 systemd already sets up below. Removed it.
-#      Also: fbi likely treats a systemd-provided TTY (no shell, no job
-#      control) as "not really interactive" and exits rather than waiting
-#      for keyboard input that will never come. Rather than continuing to
-#      fight that detection, "-t <seconds>" tells fbi explicitly how long
-#      to hold the image via its own documented slideshow-timer behavior,
-#      sidestepping the interactive/non-interactive question entirely.
-cat > /etc/systemd/system/photoframe-boot-splash.service << 'EOF'
-[Unit]
-Description=Photoframe boot splash (hides console/systemd status messages during boot)
-After=local-fs.target systemd-udev-settle.service
-Before=photoframe-slideshow.service
-
-[Service]
-Type=simple
-# Belt-and-suspenders on top of After=systemd-udev-settle.service above -
-# wait for the (by now, settled) framebuffer device rather than failing
-# outright on the rare chance it's still not there.
-ExecStartPre=/bin/bash -c 'for i in $(seq 1 20); do [ -e /dev/fb0 ] && exit 0; sleep 0.5; done; exit 1'
-# -t 90 matches RuntimeMaxSec below - fbi holds the image via its own
-# slideshow timer instead of waiting on keyboard input from a terminal
-# nobody is typing into; RuntimeMaxSec/the slideshow's pkill will end it
-# sooner in the normal case anyway.
-ExecStart=/bin/bash -c 'exec /usr/bin/fbi -t 90 -d /dev/fb0 -a --noverbose "$(/opt/photoframe/resolve-notice-image.sh booting)"'
-Restart=no
-# Safety net: if the slideshow never actually starts (e.g. config.yaml
-# isn't filled in yet), don't leave this running forever - stop after a
-# generous timeout instead of a stale screen with no timeout at all.
-RuntimeMaxSec=90
-TimeoutStopSec=3
-StandardInput=tty
-TTYPath=/dev/tty1
-TTYReset=yes
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=sysinit.target
-EOF
-
 cat > /etc/systemd/system/photoframe-slideshow.service << EOF
 [Unit]
 Description=Photoframe Slideshow
 After=multi-user.target systemd-udev-settle.service
+# Crash-loop protection: if the service somehow keeps failing and
+# restarting (Restart=always/RestartSec=5 below), stop retrying after
+# StartLimitBurst failures within StartLimitIntervalSec instead of
+# hammering the SD card / CPU forever. Needs a manual
+# "systemctl reset-failed photoframe-slideshow" (or a reboot) to try again.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 User=$FRAME_USER
@@ -421,12 +487,13 @@ WorkingDirectory=$INSTALL_DIR
 Environment="SDL_VIDEODRIVER=kmsdrm"
 Environment="SDL_VIDEO_KMSDRM_DEVICE=/dev/dri/card0"
 Environment="SDL_AUDIODRIVER=dummy"
-# Kill any still-running boot-splash fbi directly, rather than relying on
-# systemd's Conflicts= (which turned out to just drop that unit's start
-# job from the initial boot transaction instead of sequencing a
-# stop-then-start - see the long comment above
-# photoframe-boot-splash.service for the full story).
-ExecStartPre=-/usr/bin/pkill -f /usr/bin/fbi
+# On-device OOM kills were observed hitting this process (512 MB RAM is
+# tight, especially with mpv running for video playback at the same
+# time). Making the kernel strongly prefer NOT to kill this one means a
+# genuine memory crunch instead takes out the disposable mpv child
+# process (that one video is skipped, already handled gracefully) rather
+# than the whole slideshow going black until Restart=always catches up.
+OOMScoreAdjust=-500
 ExecStartPre=/bin/sleep 3
 ExecStart=$PYTHON $INSTALL_DIR/slideshow.py
 StandardOutput=append:$LOG_DIR/photoframe-slideshow.log
@@ -455,8 +522,14 @@ User=$FRAME_USER
 Type=oneshot
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$PYTHON $INSTALL_DIR/sync.py
-StandardOutput=append:$LOG_DIR/photoframe-sync.log
-StandardError=append:$LOG_DIR/photoframe-sync.log
+# No StandardOutput/StandardError redirect here (unlike photoframe-slideshow
+# below): sync.py's own logging.basicConfig() already attaches a FileHandler
+# directly on $LOG_DIR/photoframe-sync.log, on top of its StreamHandler(stdout).
+# Redirecting systemd's stdout/stderr into that same file as well caused every
+# single log line to be written twice, byte-identical down to the millisecond
+# timestamp - confirmed on-device via `grep <text> photoframe-sync.log`
+# showing exact duplicate lines. journald still captures stdout/stderr by
+# default without this line, so `journalctl -u photoframe-sync` keeps working.
 # Lower priority: downloads shouldn't slow down the slideshow.
 Nice=10
 IOSchedulingClass=idle
@@ -479,6 +552,10 @@ cat > /etc/systemd/system/photoframe-webui.service << EOF
 [Unit]
 Description=Photoframe Web-UI
 After=network.target
+# Crash-loop protection: see the matching comment on
+# photoframe-slideshow.service above.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 User=$FRAME_USER
@@ -486,63 +563,81 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$PYTHON $INSTALL_DIR/webui.py
 Restart=always
 RestartSec=5
-Nice=5
+# Previously Nice=5 (lower priority than default, no I/O priority, no OOM
+# protection) - backwards for an admin interface, whose whole point is
+# staying reachable exactly when the device is under heavy load (a big
+# sync/remote-transcode upload, or slideshow decode work), not less.
+# Matches slideshow's own priority now rather than competing with it from
+# behind - a quick web request is cheap enough that this doesn't take
+# anything meaningful away from slideshow smoothness, but it does stop
+# webui from being the first thing starved of CPU or picked off by the
+# OOM killer under pressure.
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
+OOMScoreAdjust=-400
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Shutdown splash: scripts in /usr/lib/systemd/system-shutdown/ are run by
-# systemd-shutdown itself right before the final reboot()/poweroff() call -
-# after every other service has already been stopped - which is exactly
-# the point where "Stopping X..."/kernel unmount messages would otherwise
-# be the last thing visible on screen. No systemd unit/enable needed here;
-# systemd-shutdown auto-discovers executables in this directory.
-mkdir -p /usr/lib/systemd/system-shutdown
-cat > /usr/lib/systemd/system-shutdown/photoframe-splash.sh << 'EOF'
-#!/bin/bash
-# $1 is "halt"/"poweroff"/"reboot"/"kexec" - not distinguished here, the
-# same splash covers all of them.
-#
-# Uses hardcoded absolute paths throughout (not "command -v"/bare command
-# names) since PATH can't be relied on to be fully populated this late in
-# shutdown, after systemd-shutdown has taken over from regular PID 1.
-RESOLVER="/opt/photoframe/resolve-notice-image.sh"
-FBI="/usr/bin/fbi"
-[[ -x "$RESOLVER" ]] || exit 0
-[[ -x "$FBI" ]] || exit 0
-[[ -e /dev/fb0 ]] || exit 0
-
-IMAGE="$("$RESOLVER" shutting-down 2>/dev/null || true)"
-[[ -n "$IMAGE" && -f "$IMAGE" ]] || exit 0
-
-# -T 1 --noverbose draws the image once and then fbi just sits there; the
-# timeout guards against that blocking the actual shutdown, since this
-# script has to return before systemd-shutdown proceeds. The already-drawn
-# frame stays on the framebuffer even after fbi is killed by the timeout.
-/usr/bin/timeout 3 "$FBI" -T 1 -d /dev/fb0 -a --noverbose "$IMAGE" < /dev/null > /dev/null 2>&1 || true
+# Log rotation: neither photoframe-sync.service nor
+# photoframe-slideshow.service reopen/truncate their log file on a signal,
+# so a plain rotation (rename + reopen) would leave them writing into the
+# renamed, now-unrotated file forever. copytruncate sidesteps that: it
+# copies the current content out and truncates the original file in place,
+# which works with any process regardless of whether it supports SIGHUP.
+cat > /etc/logrotate.d/photoframe << EOF
+$LOG_DIR/photoframe-sync.log $LOG_DIR/photoframe-slideshow.log {
+    weekly
+    maxsize 20M
+    rotate 4
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
 EOF
-chown root:root /usr/lib/systemd/system-shutdown/photoframe-splash.sh
-chmod 755 /usr/lib/systemd/system-shutdown/photoframe-splash.sh
 
 # REVERTED: an earlier version of this script also baked a splash into
 # the initramfs itself (via /etc/initramfs-tools/hooks+scripts/init-premount)
-# to cover the gap before photoframe-boot-splash.service can start. That
-# caused a real boot failure on actual hardware (fbi erroring against
-# /dev/fb0, apparently a device-numbering/timing quirk with vc4-kms-v3d,
-# and/or the larger initramfs overflowing the small /boot/firmware
-# partition) - confirmed and recovered via SSH. Deliberately not
-# reintroducing it without a safer, hardware-tested design.
+# to cover the gap before boot. That caused a real boot failure on actual
+# hardware (fbi erroring against /dev/fb0, apparently a device-numbering/
+# timing quirk with vc4-kms-v3d, and/or the larger initramfs overflowing
+# the small /boot/firmware partition) - confirmed and recovered via SSH.
 #
-# Cleans up leftovers from that reverted version, in case this is a
-# reinstall/update on a system that still has it (belt-and-suspenders on
-# top of whatever manual cleanup was already done - safe to run even if
+# A later version replaced that with photoframe-boot-splash.service (a
+# regular systemd unit) plus a /usr/lib/systemd/system-shutdown/ hook for
+# the shutdown side. After four rounds of on-device diagnostics (fb0
+# device-swap race, fbi exiting immediately under a systemd-assigned TTY,
+# a Conflicts= directive silently dropped from the boot transaction, and a
+# misunderstood fbi flag) it still wasn't reliably showing the splash, so
+# this whole feature was abandoned as not worth the ongoing
+# real-hardware risk for a purely cosmetic effect. Booting/shutting down
+# now simply shows the console (quieted by the cmdline.txt flags in step
+# 6/10) instead of a splash image.
+#
+# Cleans up leftovers from any of the above on a reinstall/update, in case
+# this is running on a system that still has them (safe to run even if
 # there's nothing to clean up).
 if [[ -f /etc/initramfs-tools/hooks/photoframe-splash || -f /etc/initramfs-tools/scripts/init-premount/photoframe-splash ]]; then
     warn "Removing a previously installed initramfs boot-splash hook (reverted - caused boot failures)"
     rm -f /etc/initramfs-tools/hooks/photoframe-splash
     rm -f /etc/initramfs-tools/scripts/init-premount/photoframe-splash
     command -v update-initramfs &>/dev/null && update-initramfs -u || true
+fi
+
+if systemctl list-unit-files photoframe-boot-splash.service &>/dev/null; then
+    warn "Removing a previously installed photoframe-boot-splash.service (abandoned - never reliably displayed the splash)"
+    systemctl disable --now photoframe-boot-splash.service 2>/dev/null || true
+    rm -f /etc/systemd/system/photoframe-boot-splash.service
+fi
+if [[ -f /usr/lib/systemd/system-shutdown/photoframe-splash.sh ]]; then
+    warn "Removing a previously installed shutdown splash hook (abandoned along with the boot splash)"
+    rm -f /usr/lib/systemd/system-shutdown/photoframe-splash.sh
+fi
+if [[ -f "$INSTALL_DIR/resolve-notice-image.sh" ]]; then
+    rm -f "$INSTALL_DIR/resolve-notice-image.sh"
 fi
 
 # ---------------------------------------------------------------------------
@@ -770,8 +865,7 @@ info "sudoers rule created: /etc/sudoers.d/photoframe"
 info "10/10 Enabling services"
 # ---------------------------------------------------------------------------
 systemctl daemon-reload
-systemctl enable photoframe-slideshow photoframe-sync.timer photoframe-webui \
-    photoframe-boot-splash
+systemctl enable photoframe-slideshow photoframe-sync.timer photoframe-webui
 # restart instead of start: reliably brings up both freshly installed
 # services and ones that were paused for the installation (step 0/10) -
 # and, on a reinstall (e.g. to roll out a fix), ensures that already

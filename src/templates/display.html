@@ -68,15 +68,57 @@
              {% if sync.get('delete_removed', True) %}checked{% endif %}>
       {{ t('display_page.delete_removed_label') }}
     </label>
-  </div>
 
-  <div class="card mt">
-    <div class="card-label">{{ t('display_page.cache_mgmt_heading') }}</div>
-    <p class="text-muted">{{ t('display_page.clear_cache_desc') }}</p>
-    <button type="button" class="btn btn-danger" onclick="clearCache()">
-      {{ t('display_page.clear_cache_btn') }}
-    </button>
-    <div id="cache-result" class="test-result mt-sm"></div>
+    <label class="checkbox-label" style="margin-top:0.5rem">
+      <input type="checkbox" name="video_transcode_enabled" id="transcode-toggle"
+             {% if sync.get('video_transcode_enabled', False) %}checked{% endif %}>
+      {{ t('display_page.video_transcode_label') }}
+    </label>
+    <small>{{ t('display_page.video_transcode_hint') }}</small>
+
+    <div id="transcode-dependent-fields">
+      <div class="card-label mt-sm">{{ t('display_page.media_processing_heading') }}</div>
+      <small>{{ t('display_page.media_processing_hint') }}</small>
+      <label class="radio-option mt-sm">
+        <input type="radio" name="media_processing_mode" value="local" id="media-local-radio"
+               {% if sync.get('media_processing_mode', 'local') == 'local' %}checked{% endif %}>
+        <span>{{ t('display_page.media_processing_local') }}</span>
+      </label>
+      <label class="radio-option">
+        <input type="radio" name="media_processing_mode" value="remote" id="media-remote-radio"
+               {% if sync.get('media_processing_mode', 'local') == 'remote' %}checked{% endif %}>
+        <span>{{ t('display_page.media_processing_remote') }}</span>
+      </label>
+
+      <div id="remote-service-fields" class="mt-sm">
+        <label>{{ t('display_page.remote_service_url_label') }}
+          <input type="text" name="remote_service_url" placeholder="http://192.168.1.50:8090"
+                 value="{{ sync.get('remote_service_url', '') }}">
+        </label>
+        <label>{{ t('display_page.remote_service_api_key_label') }}
+          <input type="text" name="remote_service_api_key"
+                 value="{{ sync.get('remote_service_api_key', '') }}">
+        </label>
+        <small>{{ t('display_page.remote_service_hint') }}</small>
+      </div>
+
+      <div id="transcode-mode-row" class="mt-sm">
+        <label class="radio-option">
+          <input type="radio" name="video_transcode_mode" value="hardware" id="mode-hardware-radio"
+                 {% if not hw_capable %}disabled{% endif %}
+                 {% if sync.get('video_transcode_mode', 'hardware') == 'hardware' and hw_capable %}checked{% endif %}>
+          <span>{{ t('display_page.transcode_mode_hardware') }}</span>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="video_transcode_mode" value="software" id="mode-software-radio"
+                 {% if sync.get('video_transcode_mode', 'hardware') == 'software' or not hw_capable %}checked{% endif %}>
+          <span>{{ t('display_page.transcode_mode_software') }}</span>
+        </label>
+        {% if not hw_capable %}
+        <small>{{ t('display_page.transcode_mode_hw_unavailable_hint') }}</small>
+        {% endif %}
+      </div>
+    </div>
   </div>
 
   <div class="action-row mt">
@@ -90,7 +132,6 @@
 const T = {
   displayTurnedOn:      {{ t('common.display_turned_on')|tojson }},
   displayTurnedOff:     {{ t('common.display_turned_off')|tojson }},
-  clearCacheConfirm:    {{ t('display_page.clear_cache_confirm')|tojson }},
 };
 
 const toggle = document.getElementById('schedule-toggle');
@@ -111,6 +152,40 @@ function updateShutdownFields() {
 shutdownToggle.addEventListener('change', updateShutdownFields);
 updateShutdownFields();
 
+const transcodeToggle       = document.getElementById('transcode-toggle');
+const transcodeDependentFields = document.getElementById('transcode-dependent-fields');
+const transcodeModeRow      = document.getElementById('transcode-mode-row');
+const mediaLocalRadio       = document.getElementById('media-local-radio');
+const mediaRemoteRadio      = document.getElementById('media-remote-radio');
+const remoteServiceFields   = document.getElementById('remote-service-fields');
+
+// The whole "media processing" section (Local/Remote choice, remote
+// service fields, and - if Local - the hardware/software choice) only
+// makes sense once "Re-encode videos locally" is on. Unchecked, videos
+// are left untouched entirely and this whole section is irrelevant - the
+// separate, always-on photo downscaling safety cap (guards against OOM
+// on huge phone photos) is a different, unrelated feature and keeps
+// running locally regardless of this checkbox.
+function updateTranscodeDependentFields() {
+  transcodeDependentFields.style.display = transcodeToggle.checked ? '' : 'none';
+}
+function updateTranscodeModeRow() {
+  // Hardware/software only matters when processing happens locally AND
+  // "Re-encode videos locally" is on - irrelevant in remote mode, since
+  // neither of the Pi's own encode paths gets used there.
+  transcodeModeRow.style.display =
+    (transcodeToggle.checked && mediaLocalRadio.checked) ? '' : 'none';
+}
+function updateRemoteServiceFields() {
+  remoteServiceFields.style.display = mediaRemoteRadio.checked ? '' : 'none';
+}
+transcodeToggle.addEventListener('change', () => { updateTranscodeDependentFields(); updateTranscodeModeRow(); });
+mediaLocalRadio.addEventListener('change', () => { updateTranscodeModeRow(); updateRemoteServiceFields(); });
+mediaRemoteRadio.addEventListener('change', () => { updateTranscodeModeRow(); updateRemoteServiceFields(); });
+updateTranscodeDependentFields();
+updateTranscodeModeRow();
+updateRemoteServiceFields();
+
 async function setDisplay(power) {
   await fetch('/api/display_power', {
     method: 'POST',
@@ -118,15 +193,6 @@ async function setDisplay(power) {
     body: JSON.stringify({power})
   });
   toast(power === 'on' ? T.displayTurnedOn : T.displayTurnedOff);
-}
-
-async function clearCache() {
-  if (!confirm(T.clearCacheConfirm)) return;
-  const r = await fetch('/api/clear_cache', {method: 'POST'});
-  const d = await r.json();
-  const el = document.getElementById('cache-result');
-  el.textContent = d.message;
-  el.className   = 'test-result ' + (d.ok ? 'result-ok' : 'result-err');
 }
 </script>
 {% endblock %}

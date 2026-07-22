@@ -31,6 +31,24 @@
 </div>
 
 <div class="card mt">
+  <div class="card-label">{{ t('index.card_current_media') }}</div>
+  <div id="current-media-block">
+    {% if current_media and current_media.filename %}
+      {% if current_media.type == 'video' %}
+      <video controls muted style="max-width:100%;border-radius:8px;display:block"
+             src="/media/{{ current_media.filename }}"></video>
+      {% else %}
+      <img style="max-width:100%;border-radius:8px;display:block"
+           src="/media/{{ current_media.filename }}?t={{ current_media.shown_at }}">
+      {% endif %}
+      <div class="stat-sub mt-sm">{{ current_media.filename }} · {{ current_media.shown_at }}</div>
+    {% else %}
+      <div class="text-muted">{{ t('index.no_media_yet') }}</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card mt">
   <div class="card-label">{{ t('index.card_last_sync') }}</div>
   <div id="last-sync-block">
     {% if last_sync %}
@@ -112,6 +130,7 @@ const T = {
   displayTurnedOn:      {{ t('common.display_turned_on')|tojson }},
   displayTurnedOff:     {{ t('common.display_turned_off')|tojson }},
   shutdownConfirm:      {{ t('index.shutdown_confirm')|tojson }},
+  noMediaYet:           {{ t('index.no_media_yet')|tojson }},
 };
 
 // Remembers the last known auto-sync state so the toggle button knows what
@@ -132,6 +151,29 @@ function renderSlideshowToggleBtn() {
 
 function show(el, visible) {
   el.style.display = visible ? '' : 'none';
+}
+
+// Only touches the DOM (and re-requests the media file) when the
+// currently-shown item actually changes - comparing against the last
+// rendered key avoids reloading/flickering the image or video on every
+// 4s poll while the same item is still on screen for its full interval.
+let lastMediaKey = null;
+function renderCurrentMedia(media) {
+  const block = document.getElementById('current-media-block');
+  const key = (media && media.filename) ? (media.filename + '|' + media.shown_at) : null;
+  if (key === lastMediaKey) return;
+  lastMediaKey = key;
+
+  if (!media || !media.filename) {
+    block.innerHTML = '<div class="text-muted">' + T.noMediaYet + '</div>';
+    return;
+  }
+  const url = '/media/' + encodeURIComponent(media.filename) + '?t=' + encodeURIComponent(media.shown_at);
+  const tag = media.type === 'video'
+    ? '<video controls muted style="max-width:100%;border-radius:8px;display:block" src="' + url + '"></video>'
+    : '<img style="max-width:100%;border-radius:8px;display:block" src="' + url + '">';
+  block.innerHTML = tag +
+    '<div class="stat-sub mt-sm">' + media.filename + ' · ' + media.shown_at + '</div>';
 }
 
 // Live status: polls /api/status so you can see when a sync/the slideshow
@@ -165,6 +207,8 @@ async function refreshStatus() {
 
     document.getElementById('n-images').textContent = d.n_images;
     document.getElementById('size-gb').textContent = d.size_gb;
+
+    renderCurrentMedia(d.current_media);
 
     const lastSyncEl = document.getElementById('last-sync-block');
     if (d.last_sync) {

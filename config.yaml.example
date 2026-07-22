@@ -58,6 +58,25 @@ sync:
   max_cache_size_gb: 5.0      # Maximum cache size (oldest images are removed)
   delete_removed: true        # Delete locally when no longer present on the server
 
+  # Local video re-encode (see the web UI's Display tab). Off by default -
+  # only worth turning on if videos are actually stuttering.
+  video_transcode_enabled: false
+  # "hardware" or "software" - which encoder this device uses when
+  # media_processing_mode (below) is "local". Ignored entirely when
+  # media_processing_mode is "remote".
+  video_transcode_mode: hardware
+
+  # Where photo downscaling and video transcoding actually happen:
+  # "local" (this device's own CPU) or "remote" (a separate machine on
+  # the network - see remote-transcode-service/ in this repo, and its own
+  # install.sh for setup). Worth using "remote" if this device's hardware
+  # video encoder is unreliable (a real, confirmed issue on some Pi
+  # units - corrupts video regardless of content/resolution/tool) or its
+  # CPU is too weak for fast software encoding.
+  media_processing_mode: local
+  remote_service_url: ""       # e.g. "http://192.168.1.50:8090" - printed by remote-transcode-service/install.sh
+  remote_service_api_key: ""   # printed by the same script
+
 # ---------------------------------------------------------------------------
 # Slideshow
 # ---------------------------------------------------------------------------

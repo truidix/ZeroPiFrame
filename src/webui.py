@@ -7,22 +7,25 @@ Reachable at http://photoframe.local:8080
 import os
 import re
 import sys
+import json
 import subprocess
 import logging
 from pathlib import Path
 from datetime import datetime
 
 import yaml
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory
 
 # Import sync.py from the same directory
 sys.path.insert(0, str(Path(__file__).parent))
 from sync import test_nextcloud, test_immich, cached_files, cache_size_gb
+from hw import hdmi_audio_supported, hardware_h264_encoder_available
 import i18n
 
 CONFIG_PATH  = Path('/opt/photoframe/config.yaml')
 CACHE_DIR    = Path('/var/lib/photoframe/cache')
 LOG_FILE     = Path('/var/log/photoframe-sync.log')
+CURRENT_STATE_PATH = Path('/var/lib/photoframe/current.json')
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s [webui] %(levelname)s: %(message)s')
@@ -130,6 +133,18 @@ def get_last_sync() -> dict | None:
         return None
 
 
+def get_current_media() -> dict | None:
+    """Reads whatever slideshow.py last recorded as currently on screen
+    (see _write_current_state() there). Returns None if the slideshow
+    hasn't written anything yet (e.g. not started), or the file is
+    missing/unreadable for any other reason - the status page just shows
+    "no media yet" in that case rather than erroring."""
+    try:
+        return json.loads(CURRENT_STATE_PATH.read_text())
+    except Exception:
+        return None
+
+
 def get_next_sync() -> str:
     r = subprocess.run(
         ['systemctl', 'show', 'photoframe-sync.timer', '--property=NextElapseUSecRealtime'],
@@ -175,7 +190,18 @@ def index():
         n_images=n_images,
         size_gb=f'{size_gb:.2f}',
         last_sync=get_last_sync(),
+        current_media=get_current_media(),
     )
+
+
+@app.route('/media/<path:filename>')
+def media_file(filename):
+    """Serves a single cached photo/video file as-is, for the status
+    page's "currently displayed" preview. send_from_directory guards
+    against path traversal (e.g. "../") on its own, and also handles
+    conditional/range requests, which the browser's <video> tag needs to
+    be able to seek/play an mp4 properly."""
+    return send_from_directory(CACHE_DIR, filename)
 
 
 @app.route('/sources', methods=['GET', 'POST'])
@@ -216,9 +242,23 @@ def sources():
                            saved=request.args.get('saved'))
 
 
+_audio_supported_cache = None
+
+
+def _cached_hdmi_audio_supported() -> bool:
+    """Same rationale/caching as slideshow.py's copy: the connected
+    display doesn't change at runtime, so there's no need to re-read/
+    re-parse the EDID on every single page load."""
+    global _audio_supported_cache
+    if _audio_supported_cache is None:
+        _audio_supported_cache = hdmi_audio_supported()
+    return _audio_supported_cache
+
+
 @app.route('/slideshow', methods=['GET', 'POST'])
 def slideshow():
     cfg = load_config()
+    audio_supported = _cached_hdmi_audio_supported()
 
     if request.method == 'POST':
         data = request.form
@@ -235,21 +275,36 @@ def slideshow():
         sl['transition_duration_ms'] = int(data.get('t_duration', 1500))
         sl['ken_burns_zoom']        = float(data.get('kb_zoom', 0.08))
         sl['shuffle']               = data.get('order') == 'shuffle'
-        sl['fit_mode']              = data.get('fit_mode', 'contain')
+        sl['fit_mode']              = data.get('fit_mode') if data.get('fit_mode') in ('contain', 'cover', 'smart') else 'contain'
+        sl['smart_fit_percent']     = max(0, min(100, int(data.get('smart_fit_percent', 30) or 30)))
         sl['background_color']      = data.get('bg_color', '#000000')
         sl['video_enabled']         = 'video_enabled' in data
-        sl['video_audio']           = 'video_audio' in data
+        # Forced off, regardless of what the form submitted, if the
+        # connected display doesn't declare audio support at all - the
+        # toggle is already hidden/disabled client-side in this case (see
+        # slideshow.html), this is the server-side enforcement of the
+        # same rule so a stale page load or a hand-crafted request can't
+        # re-enable something that can never actually produce sound.
+        sl['video_audio']           = audio_supported and 'video_audio' in data
+        sl['video_player']          = data.get('video_player', 'mpv') if data.get('video_player') in ('mpv', 'vlc', 'zeroplay') else 'mpv'
 
         save_config(cfg)
         return redirect(url_for('slideshow') + '?saved=1')
 
     return render_template('slideshow.html', cfg=cfg,
+                           audio_supported=audio_supported,
                            saved=request.args.get('saved'))
 
 
 @app.route('/display', methods=['GET', 'POST'])
 def display():
     cfg = load_config()
+    # hardware_h264_encoder_available() caches itself (see hw.py) - this
+    # device's capability can't change at runtime, so no need for a
+    # webui-local cache wrapper on top of it (unlike the EDID audio check,
+    # which lives in hw.py without its own module-level cache and so gets
+    # one here in webui.py instead).
+    hw_capable = hardware_h264_encoder_available()
 
     if request.method == 'POST':
         data = request.form
@@ -262,6 +317,32 @@ def display():
         cfg['sync']['interval_minutes']   = int(data.get('sync_interval', 60))
         cfg['sync']['max_cache_size_gb']  = float(data.get('max_cache', 5))
         cfg['sync']['delete_removed']     = 'delete_removed' in data
+        transcode_enabled = 'video_transcode_enabled' in data
+        cfg['sync']['video_transcode_enabled'] = transcode_enabled
+        # Explicit hardware/software choice - no automatic fallback during
+        # normal use (see sync.py's _transcode_video_if_needed docstring).
+        # Forced to "software" server-side if this device can't actually
+        # do hardware encoding, mirroring the audio toggle's enforcement
+        # pattern - the UI already hides/disables "Hardware" in that case,
+        # so this is just a defensive backstop against stale form posts.
+        requested_mode = data.get('video_transcode_mode', 'hardware')
+        cfg['sync']['video_transcode_mode'] = requested_mode if hw_capable else 'software'
+
+        # "Media processing": local (photos via PIL, video via the
+        # hardware/software choice above) or remote (both sent to a
+        # separate machine - see sync.py's REMOTE and
+        # remote-transcode-service/ in this repo). The web UI only shows
+        # this choice while "Re-encode videos locally" is checked, so it's
+        # forced back to "local" server-side when that's off - same
+        # defensive-backstop pattern as hw_capable above. This does NOT
+        # affect the separate, always-on photo downscaling safety cap
+        # (guards against OOM on huge phone photos, see sync.py's
+        # MAX_DIMENSION_PX) - that keeps running locally regardless of
+        # video_transcode_enabled, exactly as it always has.
+        requested_media_mode = data.get('media_processing_mode', 'local')
+        cfg['sync']['media_processing_mode'] = requested_media_mode if transcode_enabled else 'local'
+        cfg['sync']['remote_service_url']     = data.get('remote_service_url', '').strip()
+        cfg['sync']['remote_service_api_key'] = data.get('remote_service_api_key', '').strip()
 
         shutdown_enabled = 'shutdown_enabled' in data
         cfg['display']['shutdown_time'] = data.get('shutdown_time', '22:55') if shutdown_enabled else ''
@@ -277,7 +358,7 @@ def display():
 
         return redirect(url_for('display') + '?saved=1')
 
-    return render_template('display.html', cfg=cfg,
+    return render_template('display.html', cfg=cfg, hw_capable=hw_capable,
                            saved=request.args.get('saved'))
 
 # ---------------------------------------------------------------------------
@@ -477,6 +558,7 @@ def api_status():
         'n_images': n_images,
         'size_gb': round(size_gb, 2),
         'last_sync': get_last_sync(),
+        'current_media': get_current_media(),
     })
 
 # ---------------------------------------------------------------------------

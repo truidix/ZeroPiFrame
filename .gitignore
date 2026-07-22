@@ -1,5 +1,7 @@
 # Live config (contains credentials) — only config.yaml.example is tracked
 config.yaml
+config.yaml_backup*
+config.yaml.bak*
 
 # Python
 __pycache__/
