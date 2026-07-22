@@ -133,6 +133,22 @@ info "0b/10 Showing a notice image during installation"
 # showing the text console during the (sometimes multi-minute)
 # installation.
 FBI_PID=""
+# Killing fbi only stops it from drawing new frames - the pixels it
+# already wrote stay resident in VT1's saved screen state (that's how the
+# kernel VT subsystem preserves each console's own contents across
+# switches) until something else overwrites them. Under normal continuous
+# slideshow operation that's invisible, since pygame reclaims DRM master
+# and redraws immediately - but slideshow.py's own chvt dance around
+# video playback (BLANK_VT/CONSOLE_VT, see its play_video()) briefly
+# re-exposes VT1's raw state with nothing yet drawn over it, which is
+# exactly the gap this leftover "please wait" notice image was bleeding
+# through into. Zeroing /dev/fb0 right after killing fbi - while VT1 is
+# still the active console, since that's the VT fbi (-T 1) drew onto -
+# ensures nothing stale is left behind for that gap to later reveal.
+_clear_notice_fb() {
+    [[ -e /dev/fb0 ]] && dd if=/dev/zero of=/dev/fb0 2>/dev/null
+    true
+}
 if [[ "$SLIDESHOW_WAS_ACTIVE" -eq 1 ]]; then
     if ! command -v fbi &>/dev/null; then
         apt-get install -y --no-install-recommends fbi \
@@ -171,8 +187,9 @@ if [[ "$SLIDESHOW_WAS_ACTIVE" -eq 1 ]]; then
         # Safety net: if the script aborts prematurely (set -e on an error
         # in a later step), the notice image should still not stay on
         # screen forever, falsely suggesting a successful completion that
-        # never actually happened.
-        trap '[[ -n "$FBI_PID" ]] && kill "$FBI_PID" 2>/dev/null || true' EXIT
+        # never actually happened. Also clears the leftover frame itself
+        # (see _clear_notice_fb above) - not just the process.
+        trap '[[ -n "$FBI_PID" ]] && { kill "$FBI_PID" 2>/dev/null; sleep 0.2; _clear_notice_fb; } || true' EXIT
     else
         warn "fbi/framebuffer not available - no notice image during installation"
     fi
@@ -880,6 +897,9 @@ systemctl restart photoframe-sync.timer photoframe-webui
 if [[ -n "$FBI_PID" ]] && kill -0 "$FBI_PID" 2>/dev/null; then
     kill "$FBI_PID" 2>/dev/null || true
     wait "$FBI_PID" 2>/dev/null || true
+    # Not just stopping fbi - clearing what it left behind in VT1's saved
+    # console state (see _clear_notice_fb's comment, step 0b above).
+    _clear_notice_fb
 fi
 
 # Checks ONLY the fields of the currently active source (source:
