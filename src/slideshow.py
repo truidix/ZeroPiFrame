@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Photoframe Slideshow
+ZeroPiFrame Slideshow
 Displays images from the cache on the framebuffer via pygame.
 Supported transitions: none, fade, slide_left, slide_right,
 slide_up, slide_down, wipe_left, ken_burns, zoom_in, dissolve
@@ -37,13 +37,13 @@ import pygame
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-CONFIG_PATH      = Path('/opt/photoframe/config.yaml')
-CACHE_DIR        = Path('/var/lib/photoframe/cache')
-PLACEHOLDER      = Path('/opt/photoframe/static/placeholder.png')
-CURRENT_STATE_PATH = Path('/var/lib/photoframe/current.json')
+CONFIG_PATH      = Path('/opt/zeropiframe/config.yaml')
+CACHE_DIR        = Path('/var/lib/zeropiframe/cache')
+PLACEHOLDER      = Path('/opt/zeropiframe/static/placeholder.png')
+CURRENT_STATE_PATH = Path('/var/lib/zeropiframe/current.json')
 # Written by sync.py (Immich path only - see its own extract_immich_photo_metadata),
 # read-only from here. Same path/name sync.py uses under the same CACHE_DIR.
-PHOTO_METADATA_PATH = CACHE_DIR / '.photoframe-metadata.json'
+PHOTO_METADATA_PATH = CACHE_DIR / '.zeropiframe-metadata.json'
 # DRM connector name for VLC's --drm-vout-display (see play_video()) - per
 # Raspberry Pi's own documentation, "HDMI-A-1" is the single HDMI output on
 # a Zero/Zero 2 W/1/2/3 (Pi 4 and up have two and would need HDMI-A-2 for
@@ -277,7 +277,7 @@ def make_placeholder(w: int, h: int) -> pygame.Surface:
     surf = pygame.Surface((w, h))
     surf.fill((20, 20, 20))
     font = pygame.font.SysFont('sans', 36)
-    lines = ['Photoframe', '', 'No images in cache.', 'Please configure sync:', 'http://photoframe.local:8080']
+    lines = ['ZeroPiFrame', '', 'No images in cache.', 'Please configure sync:', 'http://zeropiframe.local:8080']
     y = h // 2 - len(lines) * 25
     for line in lines:
         text = font.render(line, True, (180, 180, 180))
@@ -860,7 +860,7 @@ def play_video(path: Path, audio: bool, player: str = 'mpv') -> pygame.Surface:
         # --verbose: prints ZeroPlay's own decoder/DRM driver diagnostics
         # (container/codec/resolution detected, hardware decoder opened,
         # display initialised, etc.) straight into this service's own log
-        # (photoframe-slideshow.log, via the systemd unit's
+        # (zeropiframe-slideshow.log, via the systemd unit's
         # StandardOutput/StandardError redirection) - a one-line startup
         # summary per README, not a per-frame firehose, so safe to leave
         # on permanently rather than only during manual troubleshooting.
@@ -1142,7 +1142,7 @@ def run():
                         sys.exit(0)
 
                 # Looked up once per file rather than cached across the
-                # whole pass: a sync run updating .photoframe-metadata.json
+                # whole pass: a sync run updating .zeropiframe-metadata.json
                 # mid-slideshow should be visible on the very next file,
                 # and re-reading one small JSON file per image/video change
                 # is negligible next to everything else already happening

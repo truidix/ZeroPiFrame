@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Photoframe Web UI
-Reachable at http://photoframe.local:8080
+ZeroPiFrame Web UI
+Reachable at http://zeropiframe.local:8080
 """
 
 import os
@@ -22,10 +22,10 @@ from sync import test_nextcloud, test_immich, cached_files, cache_size_gb
 from hw import hdmi_audio_supported, hardware_h264_encoder_available
 import i18n
 
-CONFIG_PATH  = Path('/opt/photoframe/config.yaml')
-CACHE_DIR    = Path('/var/lib/photoframe/cache')
-LOG_FILE     = Path('/var/log/photoframe-sync.log')
-CURRENT_STATE_PATH = Path('/var/lib/photoframe/current.json')
+CONFIG_PATH  = Path('/opt/zeropiframe/config.yaml')
+CACHE_DIR    = Path('/var/lib/zeropiframe/cache')
+LOG_FILE     = Path('/var/log/zeropiframe-sync.log')
+CURRENT_STATE_PATH = Path('/var/lib/zeropiframe/current.json')
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s [webui] %(levelname)s: %(message)s')
@@ -147,7 +147,7 @@ def get_current_media() -> dict | None:
 
 def get_next_sync() -> str:
     r = subprocess.run(
-        ['systemctl', 'show', 'photoframe-sync.timer', '--property=NextElapseUSecRealtime'],
+        ['systemctl', 'show', 'zeropiframe-sync.timer', '--property=NextElapseUSecRealtime'],
         capture_output=True, text=True
     )
     # Simplified output
@@ -165,12 +165,12 @@ def get_next_sync() -> str:
 @app.route('/')
 def index():
     cfg          = load_config()
-    slide_status = get_service_status('photoframe-slideshow')
-    sync_status  = get_service_status('photoframe-sync')
-    timer_status = get_service_status('photoframe-sync.timer')
+    slide_status = get_service_status('zeropiframe-slideshow')
+    sync_status  = get_service_status('zeropiframe-sync')
+    timer_status = get_service_status('zeropiframe-sync.timer')
     sync_running = sync_status in ('active', 'activating')
-    sync_enabled = is_service_enabled('photoframe-sync.timer')
-    slideshow_enabled = is_service_enabled('photoframe-slideshow')
+    sync_enabled = is_service_enabled('zeropiframe-sync.timer')
+    slideshow_enabled = is_service_enabled('zeropiframe-slideshow')
 
     try:
         n_images = len(cached_files())
@@ -398,7 +398,7 @@ def api_sync_now():
     # prompt for a password ("Interactive authentication required"), so this
     # goes through the tightly scoped sudoers rule set up by install.sh.
     result = subprocess.run(
-        ['sudo', 'systemctl', 'start', 'photoframe-sync'],
+        ['sudo', 'systemctl', 'start', 'zeropiframe-sync'],
         capture_output=True, text=True
     )
     if result.returncode == 0:
@@ -409,12 +409,12 @@ def api_sync_now():
 @app.route('/api/sync_stop', methods=['POST'])
 def api_sync_stop():
     t = i18n.make_translator(current_language())
-    # Aborts a sync run that's currently in progress. Since photoframe-sync
+    # Aborts a sync run that's currently in progress. Since zeropiframe-sync
     # is a Type=oneshot service, "systemctl stop" cleanly terminates the
     # running Python process (SIGTERM) without touching the timer itself -
     # the next scheduled sync still runs normally.
     result = subprocess.run(
-        ['sudo', 'systemctl', 'stop', 'photoframe-sync'],
+        ['sudo', 'systemctl', 'stop', 'zeropiframe-sync'],
         capture_output=True, text=True
     )
     if result.returncode == 0:
@@ -431,7 +431,7 @@ def api_sync_toggle():
     enabled = bool(request.get_json(silent=True) and request.get_json().get('enabled'))
     action  = 'enable' if enabled else 'disable'
     result = subprocess.run(
-        ['sudo', '/opt/photoframe/apply-sync-enabled.sh', action],
+        ['sudo', '/opt/zeropiframe/apply-sync-enabled.sh', action],
         capture_output=True, text=True
     )
     if result.returncode != 0:
@@ -444,7 +444,7 @@ def api_sync_toggle():
 def api_slideshow_start():
     t = i18n.make_translator(current_language())
     result = subprocess.run(
-        ['sudo', 'systemctl', 'start', 'photoframe-slideshow'],
+        ['sudo', 'systemctl', 'start', 'zeropiframe-slideshow'],
         capture_output=True, text=True
     )
     if result.returncode == 0:
@@ -456,7 +456,7 @@ def api_slideshow_start():
 def api_slideshow_stop():
     t = i18n.make_translator(current_language())
     result = subprocess.run(
-        ['sudo', 'systemctl', 'stop', 'photoframe-slideshow'],
+        ['sudo', 'systemctl', 'stop', 'zeropiframe-slideshow'],
         capture_output=True, text=True
     )
     if result.returncode == 0:
@@ -474,7 +474,7 @@ def api_slideshow_toggle():
     t = i18n.make_translator(current_language())
     enabled = bool(request.get_json(silent=True) and request.get_json().get('enabled'))
     result = subprocess.run(
-        ['sudo', 'systemctl', 'enable' if enabled else 'disable', '--now', 'photoframe-slideshow'],
+        ['sudo', 'systemctl', 'enable' if enabled else 'disable', '--now', 'zeropiframe-slideshow'],
         capture_output=True, text=True
     )
     if result.returncode != 0:
@@ -517,7 +517,7 @@ def api_shutdown():
 
 @app.route('/api/restart_slideshow', methods=['POST'])
 def api_restart_slideshow():
-    subprocess.run(['sudo', 'systemctl', 'restart', 'photoframe-slideshow'],
+    subprocess.run(['sudo', 'systemctl', 'restart', 'zeropiframe-slideshow'],
                    capture_output=True)
     return jsonify({'ok': True})
 
@@ -543,19 +543,19 @@ def api_status():
         n_images = 0
         size_gb  = 0.0
 
-    # photoframe-sync is a Type=oneshot service without RemainAfterExit:
+    # zeropiframe-sync is a Type=oneshot service without RemainAfterExit:
     # while it's running, systemd reports "activating", then immediately
     # "inactive" afterwards (never a lasting "active" like a long-running
     # service). Cover both possible "currently running" states.
-    sync_state   = get_service_status('photoframe-sync')
+    sync_state   = get_service_status('zeropiframe-sync')
     sync_running = sync_state in ('active', 'activating')
 
     return jsonify({
-        'slideshow': get_service_status('photoframe-slideshow'),
-        'sync_timer': get_service_status('photoframe-sync.timer'),
+        'slideshow': get_service_status('zeropiframe-slideshow'),
+        'sync_timer': get_service_status('zeropiframe-sync.timer'),
         'sync_running': sync_running,
-        'sync_enabled': is_service_enabled('photoframe-sync.timer'),
-        'slideshow_enabled': is_service_enabled('photoframe-slideshow'),
+        'sync_enabled': is_service_enabled('zeropiframe-sync.timer'),
+        'slideshow_enabled': is_service_enabled('zeropiframe-slideshow'),
         'n_images': n_images,
         'size_gb': round(size_gb, 2),
         'last_sync': get_last_sync(),
@@ -576,7 +576,7 @@ def _update_hdmi_timers(cfg: dict):
     """
     on_time  = cfg.get('display', {}).get('on_time', '')
     off_time = cfg.get('display', {}).get('off_time', '')
-    script   = '/opt/photoframe/apply-hdmi-schedule.sh'
+    script   = '/opt/zeropiframe/apply-hdmi-schedule.sh'
 
     if not on_time or not off_time:
         subprocess.run(['sudo', script, 'disable'], capture_output=True)
@@ -598,7 +598,7 @@ def _update_shutdown_timer(cfg: dict):
     script through sudo.
     """
     shutdown_time = cfg.get('display', {}).get('shutdown_time', '')
-    script = '/opt/photoframe/apply-shutdown-schedule.sh'
+    script = '/opt/zeropiframe/apply-shutdown-schedule.sh'
 
     if not shutdown_time:
         subprocess.run(['sudo', script, 'disable'], capture_output=True)
@@ -611,14 +611,14 @@ def _update_shutdown_timer(cfg: dict):
 
 
 def _update_sync_interval(cfg: dict):
-    """Applies the configured sync interval to photoframe-sync.timer.
+    """Applies the configured sync interval to zeropiframe-sync.timer.
 
     Without this call, the "sync interval" field in the web UI would only
     end up in config.yaml but never actually affect the running systemd
     timer (which was set up once, with a fixed value, at install time).
     """
     minutes = cfg.get('sync', {}).get('interval_minutes', 60)
-    script  = '/opt/photoframe/apply-sync-interval.sh'
+    script  = '/opt/zeropiframe/apply-sync-interval.sh'
 
     result = subprocess.run(['sudo', script, str(minutes)],
                             capture_output=True, text=True)

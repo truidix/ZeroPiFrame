@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Photoframe Sync
+ZeroPiFrame Sync
 Synchronizes images from Nextcloud (WebDAV) or Immich (REST API)
 into the local cache. Started periodically via a systemd timer.
 """
@@ -26,16 +26,16 @@ LOG_FORMAT = '%(asctime)s [sync] %(levelname)s: %(message)s'
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT,
                     handlers=[
                         logging.StreamHandler(sys.stdout),
-                        logging.FileHandler('/var/log/photoframe-sync.log'),
+                        logging.FileHandler('/var/log/zeropiframe-sync.log'),
                     ])
 log = logging.getLogger(__name__)
 
-CONFIG_PATH = Path('/opt/photoframe/config.yaml')
-CACHE_DIR   = Path('/var/lib/photoframe/cache')
+CONFIG_PATH = Path('/opt/zeropiframe/config.yaml')
+CACHE_DIR   = Path('/var/lib/zeropiframe/cache')
 # Written by slideshow.py (see its _write_current_state) purely for the web
 # UI's status page - reused here as a cheap way to tell whether a video is
 # playing right now, see _slideshow_playing_video() below.
-CURRENT_STATE_PATH = Path('/var/lib/photoframe/current.json')
+CURRENT_STATE_PATH = Path('/var/lib/zeropiframe/current.json')
 SUPPORTED_IMAGES = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
 SUPPORTED_VIDEOS = {'.mp4', '.mkv', '.mov', '.avi', '.m4v', '.webm'}
 SUPPORTED        = SUPPORTED_IMAGES | SUPPORTED_VIDEOS
@@ -196,7 +196,7 @@ def cached_files() -> dict[str, Path]:
 # during sync and read (read-only) by slideshow.py. Named with a leading
 # dot so it's automatically excluded from cached_files()'s SUPPORTED-
 # extension filter, same convention as the per-file .etag/.lowres markers.
-METADATA_PATH = CACHE_DIR / '.photoframe-metadata.json'
+METADATA_PATH = CACHE_DIR / '.zeropiframe-metadata.json'
 
 
 def load_photo_metadata() -> dict:

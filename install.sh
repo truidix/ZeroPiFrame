@@ -1,5 +1,5 @@
 #!/bin/bash
-# Photoframe - Installation script
+# ZeroPiFrame - Installation script
 # Run as: sudo bash install.sh
 # Tested on: Raspberry Pi OS Lite 64-bit (Trixie / Debian 13), Pi Zero 2 W
 #
@@ -45,11 +45,11 @@ set -- "${ARGS[@]}"
 # Example: sudo bash install.sh david
 FRAME_USER="${1:-${SUDO_USER:-frame}}"
 id "$FRAME_USER" &>/dev/null || error "User '$FRAME_USER' does not exist. Usage: sudo bash install.sh <username>"
-info "Photoframe user: $FRAME_USER"
+info "ZeroPiFrame user: $FRAME_USER"
 
-INSTALL_DIR="/opt/photoframe"
+INSTALL_DIR="/opt/zeropiframe"
 VENV_DIR="$INSTALL_DIR/venv"
-CACHE_DIR="/var/lib/photoframe/cache"
+CACHE_DIR="/var/lib/zeropiframe/cache"
 LOG_DIR="/var/log"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)/src"
 
@@ -59,7 +59,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)/src"
 # they pick up the new code - skips apt-get, the venv/pip install, the
 # ZeroPlay source build, and every boot/config.txt/systemd-unit change,
 # which are the slow parts and don't need to be redone just because a
-# .py/.html/.json file changed. photoframe-sync doesn't need a restart
+# .py/.html/.json file changed. zeropiframe-sync doesn't need a restart
 # here: it's a systemd oneshot triggered fresh by the timer each run, so
 # simply having the updated sync.py in place is enough for its next run.
 # ---------------------------------------------------------------------------
@@ -82,13 +82,13 @@ if [[ "$DEPLOY_MODE" -eq 1 ]]; then
 
     info "Deploy: restarting services"
     systemctl daemon-reload
-    systemctl restart photoframe-webui
+    systemctl restart zeropiframe-webui
     # Only bounce the slideshow if it's actually supposed to be running -
     # a deploy shouldn't be what turns it on for someone who deliberately
     # disabled it.
-    if systemctl is-enabled --quiet photoframe-slideshow 2>/dev/null || \
-       systemctl is-active  --quiet photoframe-slideshow 2>/dev/null; then
-        systemctl restart photoframe-slideshow
+    if systemctl is-enabled --quiet zeropiframe-slideshow 2>/dev/null || \
+       systemctl is-active  --quiet zeropiframe-slideshow 2>/dev/null; then
+        systemctl restart zeropiframe-slideshow
     fi
 
     info "Deploy complete - slideshow and web UI are running the updated code"
@@ -101,23 +101,96 @@ BOOT_DIR="/boot/firmware"
 info "Boot directory: $BOOT_DIR"
 
 # ---------------------------------------------------------------------------
-info "0/10 Pausing running Photoframe services"
+# Migrating an existing "photoframe" install (this project's old name,
+# before it was renamed to ZeroPiFrame/zeropiframe) - stops the old units,
+# moves config.yaml and the photo cache over untouched (no re-entering
+# credentials, no re-downloading everything), and removes the old
+# systemd/sudoers files. Detected via the old install dir, cache dir, or
+# any old unit file still being present - any one of those means this
+# ran here before under the old name.
+#
+# The venv is deliberately NOT moved, just left behind for
+# rm -rf below - a venv's own activate script and shebang lines hardcode
+# its absolute path, so moving the directory would leave it silently
+# broken. Step 3/10 further down builds a fresh one under the new path
+# instead, which is barely slower than a plain directory move anyway.
+#
+# Old log files are deliberately left in place (not deleted) - only
+# harmless historical records once the *-sync.log/*-slideshow.log names
+# below start being written under the new names instead.
+# ---------------------------------------------------------------------------
+# Declared here (before step 0/10 below, which is the "normal" place
+# this flag gets set) so that if the OLD slideshow was the one actually
+# running, that fact survives into step 0b's notice-image decision -
+# step 0/10 only ever sets this to 1, never unconditionally resets it,
+# so setting it here first is safe either way.
+SLIDESHOW_WAS_ACTIVE=0
+
+OLD_INSTALL_DIR="/opt/photoframe"
+OLD_CACHE_PARENT="/var/lib/photoframe"
+if [[ -d "$OLD_INSTALL_DIR" || -d "$OLD_CACHE_PARENT" ]] || \
+   systemctl list-unit-files photoframe-slideshow.service &>/dev/null; then
+    info "0a/10 Migrating an existing 'photoframe' install to zeropiframe"
+
+    if systemctl is-active --quiet photoframe-slideshow 2>/dev/null; then
+        SLIDESHOW_WAS_ACTIVE=1
+    fi
+    for svc in photoframe-slideshow photoframe-sync.timer photoframe-sync photoframe-webui \
+               photoframe-hdmi-on.timer photoframe-hdmi-off.timer photoframe-shutdown.timer; do
+        systemctl stop "$svc" 2>/dev/null || true
+        systemctl disable "$svc" 2>/dev/null || true
+    done
+    rm -f /etc/systemd/system/photoframe-*.service /etc/systemd/system/photoframe-*.timer
+    systemctl daemon-reload
+
+    if [[ -f "$OLD_INSTALL_DIR/config.yaml" && ! -f "$INSTALL_DIR/config.yaml" ]]; then
+        mkdir -p "$INSTALL_DIR"
+        mv "$OLD_INSTALL_DIR/config.yaml" "$INSTALL_DIR/config.yaml"
+        info "Migrated config.yaml -> $INSTALL_DIR/config.yaml"
+    fi
+    if [[ -d "$OLD_CACHE_PARENT/cache" && ! -d "$CACHE_DIR" ]]; then
+        mkdir -p "$(dirname "$CACHE_DIR")"
+        mv "$OLD_CACHE_PARENT/cache" "$CACHE_DIR"
+        info "Migrated photo cache -> $CACHE_DIR (no re-download needed)"
+    fi
+    [[ -f "$OLD_CACHE_PARENT/current.json" && ! -f "$(dirname "$CACHE_DIR")/current.json" ]] && \
+        mv "$OLD_CACHE_PARENT/current.json" "$(dirname "$CACHE_DIR")/current.json"
+
+    rm -f /etc/sudoers.d/photoframe
+    rm -rf "$OLD_INSTALL_DIR" /opt/photoframe-build
+    # Only removes the old cache's PARENT dir if the cache subfolder is
+    # actually gone from it (i.e. the move above succeeded, or there was
+    # never one to move) - if $CACHE_DIR somehow already existed and the
+    # move was skipped above, this leaves the untouched old photos in
+    # place instead of silently deleting real data.
+    if [[ ! -d "$OLD_CACHE_PARENT/cache" ]]; then
+        rm -rf "$OLD_CACHE_PARENT"
+    else
+        warn "$OLD_CACHE_PARENT/cache still has files ($CACHE_DIR already existed) - left in place, not deleted"
+    fi
+
+    info "Migration complete - continuing with the regular zeropiframe install/update below"
+fi
+
+# ---------------------------------------------------------------------------
+info "0/10 Pausing running ZeroPiFrame services"
 # ---------------------------------------------------------------------------
 # The Zero 2 W has little headroom: apt/pip/venv work while the slideshow
 # (pygame/KMSDRM + Pillow decoding, which also holds display ownership)
 # and/or a sync (downloads, image processing) are running at the same time
 # noticeably slows down the installation and makes the Pi feel like it's
 # "hanging". If this happens to be a reinstall/update on an
-# already-running Photoframe, the services are therefore stopped first -
+# already-running ZeroPiFrame, the services are therefore stopped first -
 # step 10/10 at the end enables and restarts them again regardless, this
 # here is purely for the duration of the installation. On a fresh
 # first-time install the units don't exist yet, so "is-active" is simply
-# false and nothing happens.
-SLIDESHOW_WAS_ACTIVE=0
-for svc in photoframe-slideshow photoframe-sync.timer photoframe-sync photoframe-webui; do
+# false and nothing happens. (SLIDESHOW_WAS_ACTIVE is initialized above,
+# before the migration step - not reset here, so a migration from the old
+# "photoframe" naming isn't silently lost if that's what was running.)
+for svc in zeropiframe-slideshow zeropiframe-sync.timer zeropiframe-sync zeropiframe-webui; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
         info "Stopping $svc for the duration of the installation"
-        [[ "$svc" == "photoframe-slideshow" ]] && SLIDESHOW_WAS_ACTIVE=1
+        [[ "$svc" == "zeropiframe-slideshow" ]] && SLIDESHOW_WAS_ACTIVE=1
         systemctl stop "$svc" 2>/dev/null || true
     fi
 done
@@ -152,7 +225,7 @@ _clear_notice_fb() {
 if [[ "$SLIDESHOW_WAS_ACTIVE" -eq 1 ]]; then
     if ! command -v fbi &>/dev/null; then
         apt-get install -y --no-install-recommends fbi \
-            > /tmp/photoframe-fbi-install.log 2>&1 || true
+            > /tmp/zeropiframe-fbi-install.log 2>&1 || true
     fi
     # Pick the notice image matching the configured UI language, falling
     # back to English if config.yaml doesn't exist yet, has no 'language'
@@ -160,8 +233,8 @@ if [[ "$SLIDESHOW_WAS_ACTIVE" -eq 1 ]]; then
     # was added to the web UI but nobody has regenerated the placeholder
     # images for it yet via tools/generate_placeholder.py).
     NOTICE_LANG="en"
-    if [[ -f /opt/photoframe/config.yaml ]]; then
-        CONFIGURED_LANG="$(grep -m1 '^language:' /opt/photoframe/config.yaml 2>/dev/null \
+    if [[ -f /opt/zeropiframe/config.yaml ]]; then
+        CONFIGURED_LANG="$(grep -m1 '^language:' /opt/zeropiframe/config.yaml 2>/dev/null \
             | sed -E "s/^language:[[:space:]]*[\"']?([A-Za-z_-]+)[\"']?.*/\1/")"
         [[ -n "$CONFIGURED_LANG" ]] && NOTICE_LANG="$CONFIGURED_LANG"
     fi
@@ -180,7 +253,7 @@ if [[ "$SLIDESHOW_WAS_ACTIVE" -eq 1 ]]; then
         # still bounding the worst case.
         fbi -T 1 -t 900 -1 -d /dev/fb0 -a --noverbose \
             "$NOTICE_IMAGE" \
-            < /dev/null > /tmp/photoframe-fbi.log 2>&1 &
+            < /dev/null > /tmp/zeropiframe-fbi.log 2>&1 &
         FBI_PID=$!
         disown "$FBI_PID" 2>/dev/null || true
         info "Notice image is being displayed (PID $FBI_PID)"
@@ -244,23 +317,23 @@ apt-get install -y --no-install-recommends \
 apt-get install -y --no-install-recommends fonts-dejavu-core \
     || warn "Could not install fonts-dejavu-core - ZeroPlay will use its bitmap font fallback for subtitles"
 
-ZEROPLAY_SRC=/opt/photoframe-build/zeroplay
+ZEROPLAY_SRC=/opt/zeropiframe-build/zeroplay
 if command -v gcc &>/dev/null && command -v make &>/dev/null; then
     mkdir -p "$(dirname "$ZEROPLAY_SRC")"
-    : > /tmp/photoframe-zeroplay-build.log
+    : > /tmp/zeropiframe-zeroplay-build.log
     if [[ -d "$ZEROPLAY_SRC/.git" ]]; then
-        git -C "$ZEROPLAY_SRC" pull --ff-only >> /tmp/photoframe-zeroplay-build.log 2>&1
+        git -C "$ZEROPLAY_SRC" pull --ff-only >> /tmp/zeropiframe-zeroplay-build.log 2>&1
     else
         rm -rf "$ZEROPLAY_SRC"
         git clone --depth 1 https://github.com/HorseyofCoursey/zeroplay.git "$ZEROPLAY_SRC" \
-            >> /tmp/photoframe-zeroplay-build.log 2>&1
+            >> /tmp/zeropiframe-zeroplay-build.log 2>&1
     fi
     if [[ -d "$ZEROPLAY_SRC" ]] && (cd "$ZEROPLAY_SRC" \
-            && make >> /tmp/photoframe-zeroplay-build.log 2>&1 \
-            && make install >> /tmp/photoframe-zeroplay-build.log 2>&1); then
+            && make >> /tmp/zeropiframe-zeroplay-build.log 2>&1 \
+            && make install >> /tmp/zeropiframe-zeroplay-build.log 2>&1); then
         info "ZeroPlay built and installed ($(command -v zeroplay || echo /usr/local/bin/zeroplay))"
     else
-        warn "ZeroPlay build failed - see /tmp/photoframe-zeroplay-build.log - mpv/VLC remain available"
+        warn "ZeroPlay build failed - see /tmp/zeropiframe-zeroplay-build.log - mpv/VLC remain available"
     fi
 fi
 
@@ -274,7 +347,7 @@ fi
 # install and fall back on failure (the `if` condition shields this from
 # the script's `set -e`, so a failed first attempt doesn't abort the script).
 if apt-get install -y --no-install-recommends libraspberrypi-bin \
-       > /tmp/photoframe-vcgencmd-install.log 2>&1; then
+       > /tmp/zeropiframe-vcgencmd-install.log 2>&1; then
     info "vcgencmd package: libraspberrypi-bin"
 else
     info "libraspberrypi-bin not installable (Trixie) - installing raspi-utils-core/raspi-utils-dt"
@@ -338,7 +411,7 @@ info "5/10 Setting user permissions"
 usermod -aG video,render "$FRAME_USER" 2>/dev/null || true
 
 chown -R "$FRAME_USER:$FRAME_USER" "$CACHE_DIR"
-# The parent of $CACHE_DIR (/var/lib/photoframe) is where slideshow.py
+# The parent of $CACHE_DIR (/var/lib/zeropiframe) is where slideshow.py
 # also writes current.json (the "currently displayed" status-page state
 # file) - chown -R above only covers $CACHE_DIR itself, not its parent,
 # which was otherwise left root-owned from the mkdir -p in step 2/10,
@@ -346,10 +419,10 @@ chown -R "$FRAME_USER:$FRAME_USER" "$CACHE_DIR"
 chown "$FRAME_USER:$FRAME_USER" "$(dirname "$CACHE_DIR")"
 chown -R "$FRAME_USER:$FRAME_USER" "$INSTALL_DIR"
 
-touch "$LOG_DIR/photoframe-sync.log"
-chown "$FRAME_USER:$FRAME_USER" "$LOG_DIR/photoframe-sync.log"
-touch "$LOG_DIR/photoframe-slideshow.log"
-chown "$FRAME_USER:$FRAME_USER" "$LOG_DIR/photoframe-slideshow.log"
+touch "$LOG_DIR/zeropiframe-sync.log"
+chown "$FRAME_USER:$FRAME_USER" "$LOG_DIR/zeropiframe-sync.log"
+touch "$LOG_DIR/zeropiframe-slideshow.log"
+chown "$FRAME_USER:$FRAME_USER" "$LOG_DIR/zeropiframe-slideshow.log"
 
 # ---------------------------------------------------------------------------
 info "6/10 Configuring console / framebuffer"
@@ -389,15 +462,15 @@ if [[ -f "$CMDLINE" ]]; then
     done
     NEW_LINE="${NEW_LINE% }"
     if [[ "$NEW_LINE" != "$ORIG_LINE" ]]; then
-        cp "$CMDLINE" "$CMDLINE.photoframe-quiet.bak"
+        cp "$CMDLINE" "$CMDLINE.zeropiframe-quiet.bak"
         printf '%s\n' "$NEW_LINE" > "$CMDLINE"
-        info "cmdline.txt: removed boot-quieting flags (splash feature abandoned) - reboot to see normal console output again (backup: $CMDLINE.photoframe-quiet.bak)"
+        info "cmdline.txt: removed boot-quieting flags (splash feature abandoned) - reboot to see normal console output again (backup: $CMDLINE.zeropiframe-quiet.bak)"
     fi
 fi
 
 CONFIG="$BOOT_DIR/config.txt"
 if [[ -f "$CONFIG" ]]; then
-    cp "$CONFIG" "$CONFIG.photoframe.bak"
+    cp "$CONFIG" "$CONFIG.zeropiframe.bak"
 
     if ! grep -q "^dtoverlay=vc4-kms-v3d" "$CONFIG"; then
         echo "dtoverlay=vc4-kms-v3d" >> "$CONFIG"
@@ -415,7 +488,7 @@ if [[ -f "$CONFIG" ]]; then
     # already RAM-constrained device. Modest savings on their own, but a
     # free win with no downside if you don't need BT.
     grep -q "^dtoverlay=disable-bt" "$CONFIG" || echo "dtoverlay=disable-bt" >> "$CONFIG"
-    info "config.txt adjusted (backup: $CONFIG.photoframe.bak)"
+    info "config.txt adjusted (backup: $CONFIG.zeropiframe.bak)"
 else
     warn "$CONFIG not found - check vc4-kms-v3d manually"
     warn "If no picture appears: set SDL_VIDEODRIVER=fbcon in the service files"
@@ -445,7 +518,7 @@ info "7/10 Swap & WiFi power-save mode (512 MB RAM is tight)"
 # Bookworm and older still use dphys-swapfile, so both are handled here.
 if [[ -f /etc/rpi/swap.conf ]] || dpkg -s rpi-swap &>/dev/null; then
     mkdir -p /etc/rpi/swap.conf.d
-    cat > /etc/rpi/swap.conf.d/photoframe.conf << 'EOF'
+    cat > /etc/rpi/swap.conf.d/zeropiframe.conf << 'EOF'
 [Zram]
 RamMultiplier=2
 MaxSizeMiB=1024
@@ -463,9 +536,9 @@ fi
 
 # The Zero 2 W has no Ethernet - WiFi power-save otherwise causes
 # noticeable delays/dropouts during sync and in the web UI.
-cat > /etc/systemd/system/photoframe-wifi-powersave-off.service << 'EOF'
+cat > /etc/systemd/system/zeropiframe-wifi-powersave-off.service << 'EOF'
 [Unit]
-Description=Photoframe: Disable WiFi power-save mode
+Description=ZeroPiFrame: Disable WiFi power-save mode
 After=network.target
 
 [Service]
@@ -477,7 +550,7 @@ RemainAfterExit=true
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now photoframe-wifi-powersave-off 2>/dev/null || \
+systemctl enable --now zeropiframe-wifi-powersave-off 2>/dev/null || \
     warn "Could not disable WiFi power-save (no wlan0? using USB-LAN or similar?)"
 
 # ---------------------------------------------------------------------------
@@ -485,15 +558,15 @@ info "8/10 Setting up systemd services"
 # ---------------------------------------------------------------------------
 PYTHON="$VENV_DIR/bin/python3"
 
-cat > /etc/systemd/system/photoframe-slideshow.service << EOF
+cat > /etc/systemd/system/zeropiframe-slideshow.service << EOF
 [Unit]
-Description=Photoframe Slideshow
+Description=ZeroPiFrame Slideshow
 After=multi-user.target systemd-udev-settle.service
 # Crash-loop protection: if the service somehow keeps failing and
 # restarting (Restart=always/RestartSec=5 below), stop retrying after
 # StartLimitBurst failures within StartLimitIntervalSec instead of
 # hammering the SD card / CPU forever. Needs a manual
-# "systemctl reset-failed photoframe-slideshow" (or a reboot) to try again.
+# "systemctl reset-failed zeropiframe-slideshow" (or a reboot) to try again.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -513,8 +586,8 @@ Environment="SDL_AUDIODRIVER=dummy"
 OOMScoreAdjust=-500
 ExecStartPre=/bin/sleep 3
 ExecStart=$PYTHON $INSTALL_DIR/slideshow.py
-StandardOutput=append:$LOG_DIR/photoframe-slideshow.log
-StandardError=append:$LOG_DIR/photoframe-slideshow.log
+StandardOutput=append:$LOG_DIR/zeropiframe-slideshow.log
+StandardError=append:$LOG_DIR/zeropiframe-slideshow.log
 Restart=always
 RestartSec=5
 # Higher priority than sync/web UI: the slideshow should keep running
@@ -528,9 +601,9 @@ IOSchedulingPriority=2
 WantedBy=multi-user.target
 EOF
 
-cat > /etc/systemd/system/photoframe-sync.service << EOF
+cat > /etc/systemd/system/zeropiframe-sync.service << EOF
 [Unit]
-Description=Photoframe Sync (one-off run)
+Description=ZeroPiFrame Sync (one-off run)
 After=network-online.target
 Wants=network-online.target
 
@@ -539,22 +612,22 @@ User=$FRAME_USER
 Type=oneshot
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$PYTHON $INSTALL_DIR/sync.py
-# No StandardOutput/StandardError redirect here (unlike photoframe-slideshow
+# No StandardOutput/StandardError redirect here (unlike zeropiframe-slideshow
 # below): sync.py's own logging.basicConfig() already attaches a FileHandler
-# directly on $LOG_DIR/photoframe-sync.log, on top of its StreamHandler(stdout).
+# directly on $LOG_DIR/zeropiframe-sync.log, on top of its StreamHandler(stdout).
 # Redirecting systemd's stdout/stderr into that same file as well caused every
 # single log line to be written twice, byte-identical down to the millisecond
-# timestamp - confirmed on-device via `grep <text> photoframe-sync.log`
+# timestamp - confirmed on-device via `grep <text> zeropiframe-sync.log`
 # showing exact duplicate lines. journald still captures stdout/stderr by
-# default without this line, so `journalctl -u photoframe-sync` keeps working.
+# default without this line, so `journalctl -u zeropiframe-sync` keeps working.
 # Lower priority: downloads shouldn't slow down the slideshow.
 Nice=10
 IOSchedulingClass=idle
 EOF
 
-cat > /etc/systemd/system/photoframe-sync.timer << 'EOF'
+cat > /etc/systemd/system/zeropiframe-sync.timer << 'EOF'
 [Unit]
-Description=Photoframe Sync Timer
+Description=ZeroPiFrame Sync Timer
 
 [Timer]
 OnBootSec=30sec
@@ -565,12 +638,12 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-cat > /etc/systemd/system/photoframe-webui.service << EOF
+cat > /etc/systemd/system/zeropiframe-webui.service << EOF
 [Unit]
-Description=Photoframe Web-UI
+Description=ZeroPiFrame Web-UI
 After=network.target
 # Crash-loop protection: see the matching comment on
-# photoframe-slideshow.service above.
+# zeropiframe-slideshow.service above.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -598,14 +671,14 @@ OOMScoreAdjust=-400
 WantedBy=multi-user.target
 EOF
 
-# Log rotation: neither photoframe-sync.service nor
-# photoframe-slideshow.service reopen/truncate their log file on a signal,
+# Log rotation: neither zeropiframe-sync.service nor
+# zeropiframe-slideshow.service reopen/truncate their log file on a signal,
 # so a plain rotation (rename + reopen) would leave them writing into the
 # renamed, now-unrotated file forever. copytruncate sidesteps that: it
 # copies the current content out and truncates the original file in place,
 # which works with any process regardless of whether it supports SIGHUP.
-cat > /etc/logrotate.d/photoframe << EOF
-$LOG_DIR/photoframe-sync.log $LOG_DIR/photoframe-slideshow.log {
+cat > /etc/logrotate.d/zeropiframe << EOF
+$LOG_DIR/zeropiframe-sync.log $LOG_DIR/zeropiframe-slideshow.log {
     weekly
     maxsize 20M
     rotate 4
@@ -623,7 +696,7 @@ EOF
 # timing quirk with vc4-kms-v3d, and/or the larger initramfs overflowing
 # the small /boot/firmware partition) - confirmed and recovered via SSH.
 #
-# A later version replaced that with photoframe-boot-splash.service (a
+# A later version replaced that with zeropiframe-boot-splash.service (a
 # regular systemd unit) plus a /usr/lib/systemd/system-shutdown/ hook for
 # the shutdown side. After four rounds of on-device diagnostics (fb0
 # device-swap race, fbi exiting immediately under a systemd-assigned TTY,
@@ -637,21 +710,21 @@ EOF
 # Cleans up leftovers from any of the above on a reinstall/update, in case
 # this is running on a system that still has them (safe to run even if
 # there's nothing to clean up).
-if [[ -f /etc/initramfs-tools/hooks/photoframe-splash || -f /etc/initramfs-tools/scripts/init-premount/photoframe-splash ]]; then
+if [[ -f /etc/initramfs-tools/hooks/zeropiframe-splash || -f /etc/initramfs-tools/scripts/init-premount/zeropiframe-splash ]]; then
     warn "Removing a previously installed initramfs boot-splash hook (reverted - caused boot failures)"
-    rm -f /etc/initramfs-tools/hooks/photoframe-splash
-    rm -f /etc/initramfs-tools/scripts/init-premount/photoframe-splash
+    rm -f /etc/initramfs-tools/hooks/zeropiframe-splash
+    rm -f /etc/initramfs-tools/scripts/init-premount/zeropiframe-splash
     command -v update-initramfs &>/dev/null && update-initramfs -u || true
 fi
 
-if systemctl list-unit-files photoframe-boot-splash.service &>/dev/null; then
-    warn "Removing a previously installed photoframe-boot-splash.service (abandoned - never reliably displayed the splash)"
-    systemctl disable --now photoframe-boot-splash.service 2>/dev/null || true
-    rm -f /etc/systemd/system/photoframe-boot-splash.service
+if systemctl list-unit-files zeropiframe-boot-splash.service &>/dev/null; then
+    warn "Removing a previously installed zeropiframe-boot-splash.service (abandoned - never reliably displayed the splash)"
+    systemctl disable --now zeropiframe-boot-splash.service 2>/dev/null || true
+    rm -f /etc/systemd/system/zeropiframe-boot-splash.service
 fi
-if [[ -f /usr/lib/systemd/system-shutdown/photoframe-splash.sh ]]; then
+if [[ -f /usr/lib/systemd/system-shutdown/zeropiframe-splash.sh ]]; then
     warn "Removing a previously installed shutdown splash hook (abandoned along with the boot splash)"
-    rm -f /usr/lib/systemd/system-shutdown/photoframe-splash.sh
+    rm -f /usr/lib/systemd/system-shutdown/zeropiframe-splash.sh
 fi
 if [[ -f "$INSTALL_DIR/resolve-notice-image.sh" ]]; then
     rm -f "$INSTALL_DIR/resolve-notice-image.sh"
@@ -660,7 +733,7 @@ fi
 # ---------------------------------------------------------------------------
 info "9/10 Setting up sudo permissions for the web UI"
 # ---------------------------------------------------------------------------
-# photoframe-webui.service deliberately runs unprivileged as $FRAME_USER.
+# zeropiframe-webui.service deliberately runs unprivileged as $FRAME_USER.
 # But "Sync now" and "Restart slideshow" in the web UI internally call
 # `systemctl start/restart` on another system service - that normally
 # requires root, and since there's no interactive desktop session here,
@@ -677,7 +750,7 @@ info "9/10 Setting up sudo permissions for the web UI"
 cat > "$INSTALL_DIR/apply-hdmi-schedule.sh" << 'EOF'
 #!/bin/bash
 # Sets (or disables) the HDMI on/off schedule. Runs as root (via sudo, see
-# /etc/sudoers.d/photoframe) - therefore validates its inputs defensively
+# /etc/sudoers.d/zeropiframe) - therefore validates its inputs defensively
 # before anything is written to /etc/systemd/system/.
 #
 # Usage:
@@ -688,7 +761,7 @@ set -euo pipefail
 TIME_RE='^([01][0-9]|2[0-3]):[0-5][0-9]$'
 
 if [[ "${1:-}" == "disable" ]]; then
-    systemctl disable --now photoframe-hdmi-on.timer photoframe-hdmi-off.timer 2>/dev/null || true
+    systemctl disable --now zeropiframe-hdmi-on.timer zeropiframe-hdmi-off.timer 2>/dev/null || true
     exit 0
 fi
 
@@ -703,10 +776,10 @@ OFF_H="${OFF_TIME%%:*}"; OFF_M="${OFF_TIME##*:}"
 
 write_unit() {
     local label="$1" hh="$2" mm="$3" power="$4"
-    local name="photoframe-hdmi-${label}"
+    local name="zeropiframe-hdmi-${label}"
     cat > "/etc/systemd/system/${name}.timer" << TIMER
 [Unit]
-Description=Photoframe HDMI ${label}
+Description=ZeroPiFrame HDMI ${label}
 
 [Timer]
 OnCalendar=*-*-* ${hh}:${mm}:00
@@ -717,7 +790,7 @@ WantedBy=timers.target
 TIMER
     cat > "/etc/systemd/system/${name}.service" << SERVICE
 [Unit]
-Description=Photoframe HDMI ${label}
+Description=ZeroPiFrame HDMI ${label}
 
 [Service]
 Type=oneshot
@@ -729,7 +802,7 @@ write_unit "on"  "$ON_H"  "$ON_M"  1
 write_unit "off" "$OFF_H" "$OFF_M" 0
 
 systemctl daemon-reload
-systemctl enable --now photoframe-hdmi-on.timer photoframe-hdmi-off.timer
+systemctl enable --now zeropiframe-hdmi-on.timer zeropiframe-hdmi-off.timer
 EOF
 chown root:root "$INSTALL_DIR/apply-hdmi-schedule.sh"
 chmod 700 "$INSTALL_DIR/apply-hdmi-schedule.sh"
@@ -744,7 +817,7 @@ chmod 700 "$INSTALL_DIR/apply-hdmi-schedule.sh"
 cat > "$INSTALL_DIR/apply-shutdown-schedule.sh" << 'EOF'
 #!/bin/bash
 # Sets (or disables) the automatic shutdown time.
-# Runs as root (via sudo, see /etc/sudoers.d/photoframe).
+# Runs as root (via sudo, see /etc/sudoers.d/zeropiframe).
 #
 # Usage:
 #   apply-shutdown-schedule.sh HH:MM
@@ -754,7 +827,7 @@ set -euo pipefail
 TIME_RE='^([01][0-9]|2[0-3]):[0-5][0-9]$'
 
 if [[ "${1:-}" == "disable" ]]; then
-    systemctl disable --now photoframe-shutdown.timer 2>/dev/null || true
+    systemctl disable --now zeropiframe-shutdown.timer 2>/dev/null || true
     exit 0
 fi
 
@@ -762,9 +835,9 @@ SHUTDOWN_TIME="${1:-}"
 [[ "$SHUTDOWN_TIME" =~ $TIME_RE ]] || { echo "Invalid time: $SHUTDOWN_TIME" >&2; exit 1; }
 H="${SHUTDOWN_TIME%%:*}"; M="${SHUTDOWN_TIME##*:}"
 
-cat > /etc/systemd/system/photoframe-shutdown.timer << TIMER
+cat > /etc/systemd/system/zeropiframe-shutdown.timer << TIMER
 [Unit]
-Description=Photoframe Auto-Shutdown
+Description=ZeroPiFrame Auto-Shutdown
 
 [Timer]
 OnCalendar=*-*-* ${H}:${M}:00
@@ -774,9 +847,9 @@ Persistent=false
 WantedBy=timers.target
 TIMER
 
-cat > /etc/systemd/system/photoframe-shutdown.service << 'SERVICE'
+cat > /etc/systemd/system/zeropiframe-shutdown.service << 'SERVICE'
 [Unit]
-Description=Photoframe Auto-Shutdown
+Description=ZeroPiFrame Auto-Shutdown
 
 [Service]
 Type=oneshot
@@ -784,19 +857,19 @@ ExecStart=/sbin/poweroff
 SERVICE
 
 systemctl daemon-reload
-systemctl enable --now photoframe-shutdown.timer
+systemctl enable --now zeropiframe-shutdown.timer
 EOF
 chown root:root "$INSTALL_DIR/apply-shutdown-schedule.sh"
 chmod 700 "$INSTALL_DIR/apply-shutdown-schedule.sh"
 
-# Sync interval: photoframe-sync.timer is created above with a fixed
+# Sync interval: zeropiframe-sync.timer is created above with a fixed
 # OnUnitActiveSec=60min. The web UI's "Sync interval" field only writes to
 # config.yaml - without this helper script, changing the value in the web
 # UI would have no effect at all on the actual timer.
 cat > "$INSTALL_DIR/apply-sync-interval.sh" << 'EOF'
 #!/bin/bash
-# Sets the sync interval of photoframe-sync.timer.
-# Runs as root (via sudo, see /etc/sudoers.d/photoframe).
+# Sets the sync interval of zeropiframe-sync.timer.
+# Runs as root (via sudo, see /etc/sudoers.d/zeropiframe).
 #
 # Usage: apply-sync-interval.sh <minutes>
 set -euo pipefail
@@ -805,9 +878,9 @@ MINUTES="${1:-}"
 [[ "$MINUTES" =~ ^[0-9]+$ ]] || { echo "Invalid interval: $MINUTES" >&2; exit 1; }
 (( MINUTES >= 5 && MINUTES <= 1440 )) || { echo "Interval must be between 5 and 1440 minutes" >&2; exit 1; }
 
-cat > /etc/systemd/system/photoframe-sync.timer << TIMER
+cat > /etc/systemd/system/zeropiframe-sync.timer << TIMER
 [Unit]
-Description=Photoframe Sync Timer
+Description=ZeroPiFrame Sync Timer
 
 [Timer]
 OnBootSec=30sec
@@ -822,7 +895,7 @@ systemctl daemon-reload
 # restart instead of reload: the new OnUnitActiveSec period should be
 # recalculated starting right now, instead of only after the old period
 # elapses.
-systemctl restart photoframe-sync.timer
+systemctl restart zeropiframe-sync.timer
 EOF
 chown root:root "$INSTALL_DIR/apply-sync-interval.sh"
 chmod 700 "$INSTALL_DIR/apply-sync-interval.sh"
@@ -833,7 +906,7 @@ chmod 700 "$INSTALL_DIR/apply-sync-interval.sh"
 cat > "$INSTALL_DIR/apply-sync-enabled.sh" << 'EOF'
 #!/bin/bash
 # Permanently enables/disables the automatic (scheduled) sync.
-# Runs as root (via sudo, see /etc/sudoers.d/photoframe).
+# Runs as root (via sudo, see /etc/sudoers.d/zeropiframe).
 #
 # Usage: apply-sync-enabled.sh enable|disable
 set -euo pipefail
@@ -841,10 +914,10 @@ set -euo pipefail
 ACTION="${1:-}"
 case "$ACTION" in
   enable)
-    systemctl enable --now photoframe-sync.timer
+    systemctl enable --now zeropiframe-sync.timer
     ;;
   disable)
-    systemctl disable --now photoframe-sync.timer
+    systemctl disable --now zeropiframe-sync.timer
     ;;
   *)
     echo "Usage: apply-sync-enabled.sh enable|disable" >&2
@@ -855,40 +928,40 @@ EOF
 chown root:root "$INSTALL_DIR/apply-sync-enabled.sh"
 chmod 700 "$INSTALL_DIR/apply-sync-enabled.sh"
 
-cat > /etc/sudoers.d/photoframe << EOF
+cat > /etc/sudoers.d/zeropiframe << EOF
 # Generated by install.sh - only the specific commands that
-# photoframe-webui.service (running as $FRAME_USER) needs for "sync
+# zeropiframe-webui.service (running as $FRAME_USER) needs for "sync
 # now/stop", "start/stop/restart slideshow", the HDMI schedule, the
 # auto-shutdown schedule, and enabling/disabling the auto-sync timer. No
 # general sudo/root grant.
-$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start photoframe-sync
-$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl stop photoframe-sync
-$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start photoframe-slideshow
-$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl stop photoframe-slideshow
-$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart photoframe-slideshow
-$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl enable --now photoframe-slideshow
-$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl disable --now photoframe-slideshow
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start zeropiframe-sync
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl stop zeropiframe-sync
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start zeropiframe-slideshow
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl stop zeropiframe-slideshow
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart zeropiframe-slideshow
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl enable --now zeropiframe-slideshow
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl disable --now zeropiframe-slideshow
 $FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-hdmi-schedule.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-shutdown-schedule.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-sync-interval.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-sync-enabled.sh *
 EOF
-chmod 440 /etc/sudoers.d/photoframe
-visudo -c -f /etc/sudoers.d/photoframe || error "sudoers file invalid - please check /etc/sudoers.d/photoframe"
-info "sudoers rule created: /etc/sudoers.d/photoframe"
+chmod 440 /etc/sudoers.d/zeropiframe
+visudo -c -f /etc/sudoers.d/zeropiframe || error "sudoers file invalid - please check /etc/sudoers.d/zeropiframe"
+info "sudoers rule created: /etc/sudoers.d/zeropiframe"
 
 # ---------------------------------------------------------------------------
 info "10/10 Enabling services"
 # ---------------------------------------------------------------------------
 systemctl daemon-reload
-systemctl enable photoframe-slideshow photoframe-sync.timer photoframe-webui
+systemctl enable zeropiframe-slideshow zeropiframe-sync.timer zeropiframe-webui
 # restart instead of start: reliably brings up both freshly installed
 # services and ones that were paused for the installation (step 0/10) -
 # and, on a reinstall (e.g. to roll out a fix), ensures that already
 # running services actually pick up the new code instead of continuing to
 # run unchanged.
-systemctl restart photoframe-sync.timer photoframe-webui
+systemctl restart zeropiframe-sync.timer zeropiframe-webui
 
 # Only stop the notice image now (if it was started in step 0b) - as close
 # as possible to right before the real slideshow regains display
@@ -939,10 +1012,10 @@ PYEOF
 fi
 
 if [[ "$CONFIG_READY" -eq 1 ]]; then
-    systemctl restart photoframe-slideshow
+    systemctl restart zeropiframe-slideshow
 else
     warn "Config for the active source ($(grep -oP '^source:\s*\K\S+' "$INSTALL_DIR/config.yaml" 2>/dev/null || echo nextcloud)) not filled in yet - the slideshow will start once it's filled in:"
-    warn "  sudo systemctl start photoframe-slideshow"
+    warn "  sudo systemctl start zeropiframe-slideshow"
 fi
 
 # ---------------------------------------------------------------------------
@@ -954,14 +1027,14 @@ echo ""
 echo "  Web-UI:         http://$(hostname).local:8080"
 echo "  Config:         $INSTALL_DIR/config.yaml"
 echo "  Cache:          $CACHE_DIR"
-echo "  Sync log:       $LOG_DIR/photoframe-sync.log"
-echo "  Slideshow log:  $LOG_DIR/photoframe-slideshow.log"
+echo "  Sync log:       $LOG_DIR/zeropiframe-sync.log"
+echo "  Slideshow log:  $LOG_DIR/zeropiframe-slideshow.log"
 echo "  Python:         $PYTHON"
 echo ""
 echo "  Check services:"
-echo "    sudo systemctl status photoframe-slideshow"
-echo "    sudo systemctl status photoframe-webui"
-echo "    sudo journalctl -u photoframe-sync -f"
+echo "    sudo systemctl status zeropiframe-slideshow"
+echo "    sudo systemctl status zeropiframe-webui"
+echo "    sudo journalctl -u zeropiframe-sync -f"
 echo ""
 [[ -f "$INSTALL_DIR/config.yaml" ]] && \
     grep -q "mein_passwort\|DEIN_API_KEY" "$INSTALL_DIR/config.yaml" && \

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Photoframe i18n (internationalization) helper.
+ZeroPiFrame i18n (internationalization) helper.
 
 Translations are plain flat JSON files under translations/, one file per
 language (e.g. translations/en.json, translations/de.json). The set of

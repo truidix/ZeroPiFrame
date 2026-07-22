@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Photoframe{% block title %}{% endblock %}</title>
+  <title>ZeroPiFrame{% block title %}{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header>
     <div class="header-inner">
-      <span class="logo">📷 Photoframe</span>
+      <span class="logo">📷 ZeroPiFrame</span>
       <nav>
         <a href="/"         class="{% if request.path == '/' %}active{% endif %}">{{ t('nav.status') }}</a>
         <a href="/sources"  class="{% if request.path == '/sources' %}active{% endif %}">{{ t('nav.sources') }}</a>

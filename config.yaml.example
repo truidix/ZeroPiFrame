@@ -1,5 +1,5 @@
-# Photoframe Configuration
-# Copy to /opt/photoframe/config.yaml and adjust.
+# ZeroPiFrame Configuration
+# Copy to /opt/zeropiframe/config.yaml and adjust.
 
 # Language of the web interface. Available values depend on which files
 # are present under src/translations/ (e.g. "de", "en") - can also be set

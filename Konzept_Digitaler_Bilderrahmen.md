@@ -12,7 +12,7 @@ Basis-OS: Raspberry Pi OS Lite 64-bit (Bookworm)
 │                  Raspberry Pi Zero 2 W               │
 │                                                       │
 │  ┌─────────────┐     ┌──────────────────────────┐   │
-│  │  sync.py    │────▶│  /var/lib/photoframe/     │   │
+│  │  sync.py    │────▶│  /var/lib/zeropiframe/     │   │
 │  │  (Dienst)   │     │  cache/                   │   │
 │  └─────────────┘     │  ├── foto1.jpg            │   │
 │        │             │  ├── foto2.jpg            │   │
@@ -44,20 +44,20 @@ Beide Dienste sind **vollständig entkoppelt**. Die Slideshow läuft auch ohne N
 ## 2. Dateistruktur
 
 ```
-/opt/photoframe/
+/opt/zeropiframe/
 ├── config.yaml          # Konfiguration (Quelle, Credentials, Intervall)
 ├── sync.py              # Sync-Dienst
 ├── slideshow.py         # Slideshow-Dienst
 ├── requirements.txt     # Python-Abhängigkeiten
 └── install.sh           # Setup-Skript
 
-/var/lib/photoframe/
+/var/lib/zeropiframe/
 └── cache/               # Heruntergeladene Bilder (persistent)
 
 /etc/systemd/system/
-├── photoframe-sync.service
-├── photoframe-sync.timer    # Sync alle X Minuten
-└── photoframe-slideshow.service
+├── zeropiframe-sync.service
+├── zeropiframe-sync.timer    # Sync alle X Minuten
+└── zeropiframe-slideshow.service
 ```
 
 ---
@@ -111,7 +111,7 @@ display:
 
 **Umschalten zwischen Nextcloud und Immich:** Einfach `source: nextcloud` auf `source: immich` ändern und den Sync-Dienst neu starten:
 ```bash
-sudo systemctl restart photoframe-sync
+sudo systemctl restart zeropiframe-sync
 ```
 
 ---
@@ -199,7 +199,7 @@ for asset in album_assets:
         f"{base_url}/api/assets/{asset['id']}/original",
         headers=headers
     ).content
-    with open(f"/var/lib/photoframe/cache/{asset['id']}.jpg", 'wb') as f:
+    with open(f"/var/lib/zeropiframe/cache/{asset['id']}.jpg", 'wb') as f:
         f.write(img_data)
 ```
 
@@ -268,7 +268,7 @@ Bilder werden direkt auf den Linux **Framebuffer** gezeichnet — kein X11, kein
 from PIL import Image
 import random, os, time
 
-CACHE_DIR = "/var/lib/photoframe/cache"
+CACHE_DIR = "/var/lib/zeropiframe/cache"
 
 def get_screen_size():
     # Lese Auflösung aus /sys/class/graphics/fb0/virtual_size
@@ -307,7 +307,7 @@ while True:
 1. [Raspberry Pi Imager](https://www.raspberrypi.com/software/) herunterladen
 2. **Raspberry Pi OS Lite (64-bit)** auswählen
 3. Vor dem Flashen über das Zahnrad-Menü konfigurieren:
-   - Hostname: `photoframe`
+   - Hostname: `zeropiframe`
    - SSH aktivieren
    - WLAN-Credentials eintragen
 4. Auf SD-Karte flashen, einlegen, starten
@@ -316,7 +316,7 @@ while True:
 
 ```bash
 # SSH verbinden (nach ~60s Boot-Zeit)
-ssh pi@photoframe.local
+ssh pi@zeropiframe.local
 
 # System aktualisieren
 sudo apt update && sudo apt upgrade -y
@@ -329,18 +329,18 @@ sudo apt update && sudo apt upgrade -y
 sudo apt install -y python3-pip python3-pillow git
 
 # Projekt klonen (oder Dateien kopieren)
-sudo git clone https://github.com/YOURREPO/photoframe /opt/photoframe
+sudo git clone https://github.com/YOURREPO/zeropiframe /opt/zeropiframe
 
 # Python-Abhängigkeiten
 sudo pip3 install webdavclient3 requests pyyaml --break-system-packages
 
 # Konfiguration anlegen
-sudo cp /opt/photoframe/config.yaml.example /opt/photoframe/config.yaml
-sudo nano /opt/photoframe/config.yaml   # Credentials eintragen
+sudo cp /opt/zeropiframe/config.yaml.example /opt/zeropiframe/config.yaml
+sudo nano /opt/zeropiframe/config.yaml   # Credentials eintragen
 
 # Cache-Verzeichnis
-sudo mkdir -p /var/lib/photoframe/cache
-sudo chown pi:pi /var/lib/photoframe/cache
+sudo mkdir -p /var/lib/zeropiframe/cache
+sudo chown pi:pi /var/lib/zeropiframe/cache
 ```
 
 ### Schritt 4: Framebuffer-Zugriff
@@ -356,15 +356,15 @@ sudo systemctl disable getty@tty1
 
 ### Schritt 5: systemd-Dienste einrichten
 
-**`/etc/systemd/system/photoframe-slideshow.service`:**
+**`/etc/systemd/system/zeropiframe-slideshow.service`:**
 ```ini
 [Unit]
-Description=Photoframe Slideshow
+Description=ZeroPiFrame Slideshow
 After=multi-user.target
 
 [Service]
 User=pi
-ExecStart=/usr/bin/python3 /opt/photoframe/slideshow.py
+ExecStart=/usr/bin/python3 /opt/zeropiframe/slideshow.py
 Restart=always
 RestartSec=5
 
@@ -372,23 +372,23 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-**`/etc/systemd/system/photoframe-sync.service`:**
+**`/etc/systemd/system/zeropiframe-sync.service`:**
 ```ini
 [Unit]
-Description=Photoframe Sync (einmaliger Lauf)
+Description=ZeroPiFrame Sync (einmaliger Lauf)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 User=pi
 Type=oneshot
-ExecStart=/usr/bin/python3 /opt/photoframe/sync.py
+ExecStart=/usr/bin/python3 /opt/zeropiframe/sync.py
 ```
 
-**`/etc/systemd/system/photoframe-sync.timer`:**
+**`/etc/systemd/system/zeropiframe-sync.timer`:**
 ```ini
 [Unit]
-Description=Photoframe Sync Timer
+Description=ZeroPiFrame Sync Timer
 
 [Timer]
 OnBootSec=30sec         # 30s nach Boot einmal synken
@@ -402,14 +402,14 @@ WantedBy=timers.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable photoframe-slideshow
-sudo systemctl enable photoframe-sync.timer
-sudo systemctl start photoframe-slideshow
-sudo systemctl start photoframe-sync.timer
+sudo systemctl enable zeropiframe-slideshow
+sudo systemctl enable zeropiframe-sync.timer
+sudo systemctl start zeropiframe-slideshow
+sudo systemctl start zeropiframe-sync.timer
 
 # Status prüfen
-sudo systemctl status photoframe-slideshow
-sudo journalctl -u photoframe-sync -f   # Sync-Log live
+sudo systemctl status zeropiframe-slideshow
+sudo journalctl -u zeropiframe-sync -f   # Sync-Log live
 ```
 
 ### Schritt 7: HDMI-Zeitplan (optional)
@@ -438,11 +438,11 @@ ExecStart=/usr/bin/vcgencmd display_power 1
 ```
 Boot
  │
- ├── [30s] photoframe-sync startet → prüft Netz
+ ├── [30s] zeropiframe-sync startet → prüft Netz
  │         → Ja: lädt neue Bilder in Cache
  │         → Nein: überspringt, Cache bleibt erhalten
  │
- ├── [sofort] photoframe-slideshow startet
+ ├── [sofort] zeropiframe-slideshow startet
  │            → zeigt Bilder aus Cache in Endlosschleife
  │            → kein Cache: Platzhalter-Bild
  │
@@ -507,7 +507,7 @@ slideshow:
 
 ## 10. Web-Interface (webui.py)
 
-Das Web-Interface läuft als dritter systemd-Dienst auf Port 8080 und ist über `http://photoframe.local:8080` erreichbar. Es verwendet **Flask** (leichtgewichtiges Python-Webframework) ohne externe JavaScript-Frameworks — nur reines HTML/CSS mit minimalem JavaScript.
+Das Web-Interface läuft als dritter systemd-Dienst auf Port 8080 und ist über `http://zeropiframe.local:8080` erreichbar. Es verwendet **Flask** (leichtgewichtiges Python-Webframework) ohne externe JavaScript-Frameworks — nur reines HTML/CSS mit minimalem JavaScript.
 
 ### Architektur
 
@@ -525,14 +525,14 @@ Browser (PC/Smartphone im selben WLAN)
 Die Web-UI kommuniziert mit den anderen Diensten nicht über eine API, sondern über:
 - **Config-Datei**: Einstellungen werden in `config.yaml` geschrieben
 - **SIGHUP-Signal**: `slideshow.py` fängt SIGHUP ab und lädt Config neu (kein Neustart nötig)
-- **systemctl**: Manueller Sync-Start via `subprocess.run(["systemctl", "start", "photoframe-sync"])`
+- **systemctl**: Manueller Sync-Start via `subprocess.run(["systemctl", "start", "zeropiframe-sync"])`
 
 ### Seiten & Funktionen
 
 #### Startseite / Status (`/`)
 ```
 ┌─────────────────────────────────────────┐
-│  📷 Photoframe                    [🔄]  │
+│  📷 ZeroPiFrame                    [🔄]  │
 ├─────────────────────────────────────────┤
 │  Status                                 │
 │  ● Slideshow:  läuft                    │
@@ -625,7 +625,7 @@ from flask import Flask, render_template, request, jsonify
 import yaml, subprocess, signal, os
 
 app = Flask(__name__)
-CONFIG_PATH = "/opt/photoframe/config.yaml"
+CONFIG_PATH = "/opt/zeropiframe/config.yaml"
 
 def load_config():
     with open(CONFIG_PATH) as f:
@@ -640,7 +640,7 @@ def save_config(config):
 @app.route('/')
 def index():
     config = load_config()
-    cache_count = len(os.listdir("/var/lib/photoframe/cache"))
+    cache_count = len(os.listdir("/var/lib/zeropiframe/cache"))
     return render_template('index.html', config=config, cache_count=cache_count)
 
 @app.route('/api/test_connection', methods=['POST'])
@@ -661,7 +661,7 @@ def test_connection():
 
 @app.route('/api/sync_now', methods=['POST'])
 def sync_now():
-    subprocess.run(["systemctl", "start", "photoframe-sync"])
+    subprocess.run(["systemctl", "start", "zeropiframe-sync"])
     return jsonify({"ok": True})
 
 @app.route('/api/display', methods=['POST'])
@@ -675,12 +675,12 @@ def set_display():
 
 ```ini
 [Unit]
-Description=Photoframe Web UI
+Description=ZeroPiFrame Web UI
 After=network.target
 
 [Service]
 User=pi
-ExecStart=/usr/bin/python3 /opt/photoframe/webui.py
+ExecStart=/usr/bin/python3 /opt/zeropiframe/webui.py
 Restart=always
 
 [Install]
@@ -690,7 +690,7 @@ WantedBy=multi-user.target
 ### Aktualisierte Dateistruktur
 
 ```
-/opt/photoframe/
+/opt/zeropiframe/
 ├── config.yaml
 ├── sync.py
 ├── slideshow.py
@@ -730,7 +730,7 @@ Flask>=3.0.0
 │  └──────────┘                └────────┬─────────┘   │
 │       ▲                               │               │
 │       │ HTTP                    /var/lib/             │
-│  Browser am PC                 photoframe/cache/      │
+│  Browser am PC                 zeropiframe/cache/      │
 │                                       │               │
 └───────────────────────────────────────┼───────────────┘
                                         │ Framebuffer /dev/fb0

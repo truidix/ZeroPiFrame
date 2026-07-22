@@ -5,14 +5,14 @@
 Raspberry Pi Imager → **Raspberry Pi OS Lite (64-bit)**, Trixie/Bookworm-based.
 
 In the Imager's settings (gear icon) before writing:
-- Hostname: `photoframe`
+- Hostname: `zeropiframe`
 - Enable SSH, set a password (or add your SSH key)
 - Configure WiFi (SSID + password)
 
 ## 2. First boot
 
 ```bash
-ssh frame@photoframe.local
+ssh frame@zeropiframe.local
 ```
 
 (replace `frame` with whatever username you set in the Imager)
@@ -22,7 +22,7 @@ ssh frame@photoframe.local
 From your machine:
 
 ```bash
-scp -r "DIY Pictureframe for RPI Zero W" frame@photoframe.local:~/photoframe-src
+scp -r "DIY Pictureframe for RPI Zero W" frame@zeropiframe.local:~/zeropiframe-src
 ```
 
 ## 4. Run the installer
@@ -30,7 +30,7 @@ scp -r "DIY Pictureframe for RPI Zero W" frame@photoframe.local:~/photoframe-src
 On the Pi:
 
 ```bash
-cd ~/photoframe-src
+cd ~/zeropiframe-src
 sudo bash install.sh
 # or, if your Pi username differs from what SUDO_USER resolves to:
 sudo bash install.sh <your-username>
@@ -43,7 +43,7 @@ power-save. Takes a few minutes.
 
 ## 5. Configure your photo source
 
-Open `http://photoframe.local:8080` from any browser on the same network.
+Open `http://zeropiframe.local:8080` from any browser on the same network.
 
 - **Sources** tab: pick Nextcloud or Immich, enter URL/credentials, hit
   "Test connection" before saving.
@@ -60,18 +60,18 @@ Either wait (sync runs 30s after boot, then hourly), or click **"Sync now"**
 on the status page. Watch progress with:
 
 ```bash
-sudo journalctl -u photoframe-sync -f
+sudo journalctl -u zeropiframe-sync -f
 ```
 
 ## 7. Verify
 
 ```bash
-sudo systemctl status photoframe-slideshow
-sudo systemctl status photoframe-webui
-sudo systemctl status photoframe-sync.timer
+sudo systemctl status zeropiframe-slideshow
+sudo systemctl status zeropiframe-webui
+sudo systemctl status zeropiframe-sync.timer
 ```
 
-If the screen stays black: check `sudo journalctl -u photoframe-slideshow -e`
+If the screen stays black: check `sudo journalctl -u zeropiframe-slideshow -e`
 first — most likely cause is `vc4-kms-v3d` not active yet (needs a reboot
 after install.sh adds it to config.txt), so **reboot once** after the first
 install:
@@ -82,11 +82,11 @@ sudo reboot
 
 ## Reference
 
-- Web UI: `http://photoframe.local:8080`
-- Config file: `/opt/photoframe/config.yaml`
-- Cache: `/var/lib/photoframe/cache/`
-- Sync log: `/var/log/photoframe-sync.log`
-- Config.txt backup (made by installer): `/boot/firmware/config.txt.photoframe.bak`
+- Web UI: `http://zeropiframe.local:8080`
+- Config file: `/opt/zeropiframe/config.yaml`
+- Cache: `/var/lib/zeropiframe/cache/`
+- Sync log: `/var/log/zeropiframe-sync.log`
+- Config.txt backup (made by installer): `/boot/firmware/config.txt.zeropiframe.bak`
 
 See `HANDOFF.md` for architecture/design notes and `README.md` for the
 project overview.

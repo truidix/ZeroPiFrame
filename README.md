@@ -1,4 +1,4 @@
-# DIY Photoframe for Raspberry Pi Zero 2 W
+# ZeroPiFrame - DIY Photoframe for Raspberry Pi Zero 2 W
 
 A DIY digital picture frame running on a **Raspberry Pi Zero 2 W**. Images and videos are synced from either **Nextcloud (WebDAV)** or **Immich (REST API)** into a local cache, and a slideshow displays them on the connected screen via the Linux framebuffer — no desktop environment or X11 required.
 
@@ -44,8 +44,8 @@ This is a modernized replacement for the abandoned [photOS](https://github.com/a
 ## Installation
 
 ```bash
-# Flash Raspberry Pi OS Lite 64-bit (Trixie), set hostname=photoframe, enable SSH
-ssh frame@photoframe.local
+# Flash Raspberry Pi OS Lite 64-bit (Trixie), set hostname=zeropiframe, enable SSH
+ssh frame@zeropiframe.local
 
 # Copy this repo to the Pi, then:
 sudo bash install.sh
@@ -53,27 +53,27 @@ sudo bash install.sh
 # or explicitly: sudo bash install.sh frame
 ```
 
-After install, open `http://photoframe.local:8080` to configure your photo source and slideshow settings.
+After install, open `http://zeropiframe.local:8080` to configure your photo source and slideshow settings.
 
 ### What gets installed
 
 ```
-/opt/photoframe/              # App files (deployed by install.sh)
+/opt/zeropiframe/              # App files (deployed by install.sh)
 ├── venv/                     # Python virtualenv (--system-site-packages)
 ├── slideshow.py / sync.py / webui.py
 ├── templates/ / static/
 └── config.yaml               # Live config, written by the web UI (not tracked in git)
 
-/var/lib/photoframe/cache/    # Downloaded images + videos
-/var/log/photoframe-sync.log  # Sync log
+/var/lib/zeropiframe/cache/    # Downloaded images + videos
+/var/log/zeropiframe-sync.log  # Sync log
 ```
 
 | systemd unit                    | Purpose                                    |
 |----------------------------------|---------------------------------------------|
-| `photoframe-slideshow.service`  | Runs the slideshow continuously on boot     |
-| `photoframe-sync.timer`        | Triggers sync 30s after boot, then hourly   |
-| `photoframe-sync.service`      | One-shot sync run (called by the timer)     |
-| `photoframe-webui.service`     | Flask web UI on :8080                       |
+| `zeropiframe-slideshow.service`  | Runs the slideshow continuously on boot     |
+| `zeropiframe-sync.timer`        | Triggers sync 30s after boot, then hourly   |
+| `zeropiframe-sync.service`      | One-shot sync run (called by the timer)     |
+| `zeropiframe-webui.service`     | Flask web UI on :8080                       |
 
 ## Configuration
 
