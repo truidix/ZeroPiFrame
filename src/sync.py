@@ -185,6 +185,53 @@ def cached_files() -> dict[str, Path]:
             if f.is_file() and f.suffix.lower() in SUPPORTED}
 
 
+# ---------------------------------------------------------------------------
+# Photo info (date/location) metadata index
+# ---------------------------------------------------------------------------
+# Slideshow's optional on-screen overlay (show_photo_info) needs a
+# filename -> {date, location} lookup, but slideshow.py only ever reads
+# local cache files - it never talks to Immich/Nextcloud itself. This is
+# the hand-off point: a single small JSON index, keyed by the same cache
+# filename used everywhere else (asset_id + extension), written here
+# during sync and read (read-only) by slideshow.py. Named with a leading
+# dot so it's automatically excluded from cached_files()'s SUPPORTED-
+# extension filter, same convention as the per-file .etag/.lowres markers.
+METADATA_PATH = CACHE_DIR / '.photoframe-metadata.json'
+
+
+def load_photo_metadata() -> dict:
+    try:
+        return json.loads(METADATA_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def save_photo_metadata(meta: dict):
+    try:
+        tmp = METADATA_PATH.with_suffix('.tmp')
+        tmp.write_text(json.dumps(meta))
+        tmp.replace(METADATA_PATH)
+    except Exception as e:
+        log.warning(f'Could not save photo metadata index: {e}')
+
+
+def extract_immich_photo_metadata(asset: dict) -> dict:
+    """Pulls date-taken + place name out of one Immich asset's exifInfo.
+
+    Immich already reverse-geocodes GPS coordinates into a city/country
+    for us server-side, so no extra geocoding work is needed here - this
+    is Immich-specific. Nextcloud/WebDAV has no equivalent API-level
+    metadata (only raw EXIF in the file itself, which would need actual
+    reverse-geocoding to turn into a place name) - not implemented, so
+    Nextcloud-sourced files simply get no entry here and the slideshow
+    overlay shows nothing for them.
+    """
+    exif = asset.get('exifInfo') or {}
+    date_str = exif.get('dateTimeOriginal') or asset.get('fileCreatedAt')
+    location = ', '.join(p for p in (exif.get('city'), exif.get('country')) if p) or None
+    return {'date': date_str, 'location': location}
+
+
 def enforce_cache_limit(max_gb: float) -> int:
     """Deletes the oldest images when the cache limit is exceeded.
 
@@ -1022,6 +1069,7 @@ class ImmichSync:
              delete_removed: bool, transcode_enabled: bool = False,
              transcode_mode: str = 'hardware') -> tuple[int, int, int]:
         added = removed = skipped = 0
+        photo_meta = load_photo_metadata()
 
         try:
             assets = self.get_assets()
@@ -1076,6 +1124,11 @@ class ImmichSync:
 
             safe_name  = f'{asset_id}{ext}'
             remote_ids.add(safe_name)
+            # Refreshed for every asset seen this run, not just newly
+            # downloaded ones - covers both backfilling already-cached
+            # files from before this feature existed, and picking up
+            # metadata edits made in Immich itself after the initial sync.
+            photo_meta[safe_name] = extract_immich_photo_metadata(asset)
 
             local_path = CACHE_DIR / safe_name
 
@@ -1151,8 +1204,17 @@ class ImmichSync:
                 if name not in remote_ids:
                     path.unlink(missing_ok=True)
                     _needs_transcode_marker(path).unlink(missing_ok=True)
+                    photo_meta.pop(name, None)
                     log.info(f'Deleted: {name}')
                     removed += 1
+
+        # Prune anything left over from files no longer in Immich at all
+        # (e.g. deleted there while delete_removed is off locally, or a
+        # stale entry from before a cache-limit eviction) - keeps the
+        # index from growing forever with entries for files that no
+        # longer exist.
+        photo_meta = {k: v for k, v in photo_meta.items() if k in remote_ids}
+        save_photo_metadata(photo_meta)
 
         return added, removed, skipped
 

@@ -96,6 +96,10 @@ slideshow:
   background_color: "#000000"
   video_enabled: true         # Play videos (MP4, MKV, MOV, AVI ...)
   video_audio: false          # Sound for videos (true = with sound)
+  show_photo_info: false      # Bottom-of-screen bar with date/place taken.
+                              # Only populated for Immich-synced photos/videos
+                              # (Immich provides date+place already reverse-
+                              # geocoded); Nextcloud/WebDAV items show nothing.
 
 # ---------------------------------------------------------------------------
 # Display / power saving

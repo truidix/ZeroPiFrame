@@ -41,6 +41,9 @@ CONFIG_PATH      = Path('/opt/photoframe/config.yaml')
 CACHE_DIR        = Path('/var/lib/photoframe/cache')
 PLACEHOLDER      = Path('/opt/photoframe/static/placeholder.png')
 CURRENT_STATE_PATH = Path('/var/lib/photoframe/current.json')
+# Written by sync.py (Immich path only - see its own extract_immich_photo_metadata),
+# read-only from here. Same path/name sync.py uses under the same CACHE_DIR.
+PHOTO_METADATA_PATH = CACHE_DIR / '.photoframe-metadata.json'
 # DRM connector name for VLC's --drm-vout-display (see play_video()) - per
 # Raspberry Pi's own documentation, "HDMI-A-1" is the single HDMI output on
 # a Zero/Zero 2 W/1/2/3 (Pi 4 and up have two and would need HDMI-A-2 for
@@ -73,7 +76,20 @@ DEFAULT_CONFIG = {
         'video_enabled': True,
         'video_audio': False,
         'video_player': 'mpv',
+        'show_photo_info': False,
     }
+}
+
+# Month names for the date shown in the photo-info overlay - kept as a
+# tiny local lookup instead of relying on the system locale (setting up
+# real locales on a minimal Raspberry Pi OS Lite image is its own can of
+# worms, and this project's i18n system - see src/i18n.py - already
+# favors small dedicated dictionaries over OS-level localization).
+_MONTH_NAMES = {
+    'de': ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli',
+           'August', 'September', 'Oktober', 'November', 'Dezember'],
+    'en': ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+           'August', 'September', 'October', 'November', 'December'],
 }
 
 
@@ -269,6 +285,74 @@ def make_placeholder(w: int, h: int) -> pygame.Surface:
         surf.blit(text, rect)
         y += 50
     return surf
+
+
+# ---------------------------------------------------------------------------
+# Photo info overlay (date/location, see webui's "Show photo info" toggle)
+# ---------------------------------------------------------------------------
+
+def load_photo_metadata() -> dict:
+    """Reads the {filename: {date, location}} index written by sync.py.
+
+    Read fresh every time rather than cached/reload-flagged like the main
+    config - it's a small file, a sync run updating it mid-slideshow
+    should be picked up on the very next image without needing a SIGHUP,
+    and a missing/unreadable file just means no overlay text (never
+    fatal - this is a purely cosmetic feature).
+    """
+    try:
+        return json.loads(PHOTO_METADATA_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _format_photo_date(iso_str: str | None, language: str) -> str | None:
+    if not iso_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
+    except Exception:
+        return None
+    months = _MONTH_NAMES.get(language, _MONTH_NAMES['en'])
+    month_name = months[dt.month - 1]
+    if language == 'de':
+        return f'{dt.day}. {month_name} {dt.year}'
+    return f'{month_name} {dt.day}, {dt.year}'
+
+
+def photo_info_text(filename: str, metadata: dict, language: str) -> str | None:
+    """Returns the display string for one file, or None if there's
+    nothing to show (no metadata entry - e.g. a Nextcloud-sourced file,
+    or an Immich asset with no EXIF at all)."""
+    entry = metadata.get(filename)
+    if not entry:
+        return None
+    date_str = _format_photo_date(entry.get('date'), language)
+    location = entry.get('location')
+    parts = [p for p in (date_str, location) if p]
+    return ' – '.join(parts) if parts else None
+
+
+def build_info_overlay(text: str, w: int, h: int) -> pygame.Surface:
+    """A mostly-transparent, screen-sized surface with just a
+    semi-transparent bar and the given text at the bottom.
+
+    Deliberately screen-sized and blitted at (0, 0) rather than sized to
+    just the bar - so the same surface can be blitted on top of ANY
+    already-composited frame (a normal transition's finished new_surf,
+    or each individual Ken Burns crop) without the caller needing to
+    know the bar's exact height/position.
+    """
+    bar_h = max(36, int(h * 0.06))
+    overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+    bar = pygame.Surface((w, bar_h), pygame.SRCALPHA)
+    bar.fill((0, 0, 0, 140))
+    overlay.blit(bar, (0, h - bar_h))
+    font = pygame.font.SysFont('sans', max(18, int(bar_h * 0.5)))
+    text_surf = font.render(text, True, (230, 230, 230))
+    text_rect = text_surf.get_rect(midleft=(int(w * 0.03), h - bar_h // 2))
+    overlay.blit(text_surf, text_rect)
+    return overlay
 
 # ---------------------------------------------------------------------------
 # Transitions
@@ -579,10 +663,20 @@ def pick_transition(enabled: list) -> str:
 # ---------------------------------------------------------------------------
 
 def display_ken_burns(screen, img_pil: Image.Image, duration_s: int,
-                      zoom: float, old_surf: pygame.Surface):
+                      zoom: float, old_surf: pygame.Surface,
+                      info_overlay: pygame.Surface | None = None):
     """
     Displays the image with a slow pan+zoom effect.
     Briefly fades in at the start (fade-in from old_surf).
+
+    info_overlay (photo-info date/location bar, see build_info_overlay),
+    if given, is blitted on top of every single frame at a fixed screen
+    position - unlike the image itself, which is a moving crop out of a
+    larger, oversized canvas (see canvas_w/canvas_h above) for the pan
+    effect. Blitting it onto the already-cropped, screen-sized frame each
+    time (rather than baking it into img_pil before cropping) is what
+    keeps it visually fixed at the bottom instead of panning/zooming
+    along with the photo underneath it.
     """
     w, h = screen.get_size()
 
@@ -630,6 +724,8 @@ def display_ken_burns(screen, img_pil: Image.Image, duration_s: int,
         surf.set_alpha(int(255 * t))
         screen.blit(old_surf, (0, 0))
         screen.blit(surf, (0, 0))
+        if info_overlay is not None:
+            screen.blit(info_overlay, (0, 0))
         pygame.display.flip()
         _tick(fade_delay)
 
@@ -646,10 +742,15 @@ def display_ken_burns(screen, img_pil: Image.Image, duration_s: int,
         crop = img_scaled.crop((cx, cy, cx + w, cy + h))
         surf = pil_to_surface(crop)
         screen.blit(surf, (0, 0))
+        if info_overlay is not None:
+            screen.blit(info_overlay, (0, 0))
         pygame.display.flip()
         _tick(frame_delay)
 
-    return pil_to_surface(img_scaled.crop((ex, ey, ex + w, ey + h)))
+    final_surf = pil_to_surface(img_scaled.crop((ex, ey, ex + w, ey + h)))
+    if info_overlay is not None:
+        final_surf.blit(info_overlay, (0, 0))
+    return final_surf
 
 
 # ---------------------------------------------------------------------------
@@ -989,6 +1090,8 @@ def run():
             video_enabled = sl.get('video_enabled', True)
             video_audio   = sl.get('video_audio', False)
             video_player  = sl.get('video_player', 'mpv')
+            show_photo_info = sl.get('show_photo_info', False)
+            language      = _config.get('language', 'en')
 
             images = get_media_list(video_enabled)
 
@@ -1026,6 +1129,8 @@ def run():
                     video_enabled = sl.get('video_enabled', True)
                     video_audio   = sl.get('video_audio', False)
                     video_player  = sl.get('video_player', 'mpv')
+                    show_photo_info = sl.get('show_photo_info', False)
+                    language = _config.get('language', 'en')
 
                 # Process pygame events
                 for event in pygame.event.get():
@@ -1036,9 +1141,33 @@ def run():
                         pygame.quit()
                         sys.exit(0)
 
+                # Looked up once per file rather than cached across the
+                # whole pass: a sync run updating .photoframe-metadata.json
+                # mid-slideshow should be visible on the very next file,
+                # and re-reading one small JSON file per image/video change
+                # is negligible next to everything else already happening
+                # here (decode, resize, transitions).
+                info_text = photo_info_text(media_path.name, load_photo_metadata(), language) \
+                    if show_photo_info else None
+
                 # --- Video ---
                 if media_path.suffix.lower() in SUPPORTED_VIDEOS:
                     _write_current_state('video', media_path.name)
+                    if info_text:
+                        # No persistent overlay during actual playback -
+                        # mpv/VLC/ZeroPlay each own the DRM output directly
+                        # while playing (see play_video() below), with no
+                        # reliable, consistent way across all three to draw
+                        # on top of that. Instead: a brief lead-in card,
+                        # shown while pygame still owns the display, right
+                        # before handing off - same visual style as the
+                        # photo overlay, just held on screen a moment
+                        # longer since there's no underlying image to see.
+                        lead_in = current_surf.copy()
+                        lead_in.blit(build_info_overlay(info_text, W, H), (0, 0))
+                        screen.blit(lead_in, (0, 0))
+                        pygame.display.flip()
+                        _tick(3.0)
                     try:
                         screen = play_video(media_path, video_audio, video_player)
                         W, H = screen.get_size()
@@ -1117,12 +1246,16 @@ def run():
                 # until systemd restarts the slideshow. Instead, only this
                 # one image is skipped and the display rebuilt if needed.
                 try:
+                    info_overlay_surf = build_info_overlay(info_text, W, H) if info_text else None
                     if t_name == 'ken_burns':
                         current_surf = display_ken_burns(
-                            screen, img_pil, interval, kb_zoom, current_surf
+                            screen, img_pil, interval, kb_zoom, current_surf,
+                            info_overlay=info_overlay_surf
                         )
                     else:
                         new_surf = pil_to_surface(img_pil)
+                        if info_overlay_surf is not None:
+                            new_surf.blit(info_overlay_surf, (0, 0))
                         fn       = TRANSITIONS.get(t_name, transition_fade)
                         fn(screen, current_surf, new_surf, duration_ms=t_dur)
                         current_surf = new_surf

@@ -158,6 +158,16 @@
   </div>
 
   <div class="card mt">
+    <div class="card-label">{{ t('slideshow_page.photo_info_heading') }}</div>
+    <label class="checkbox-label">
+      <input type="checkbox" name="show_photo_info"
+             {% if sl.get('show_photo_info', False) %}checked{% endif %}>
+      {{ t('slideshow_page.photo_info_label') }}
+    </label>
+    <small>{{ t('slideshow_page.photo_info_hint') }}</small>
+  </div>
+
+  <div class="card mt">
     <div class="card-label">{{ t('slideshow_page.cache_mgmt_heading') }}</div>
     <p class="text-muted">{{ t('slideshow_page.clear_cache_desc') }}</p>
     <button type="button" class="btn btn-danger" onclick="clearCache()">

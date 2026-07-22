@@ -287,6 +287,7 @@ def slideshow():
         # re-enable something that can never actually produce sound.
         sl['video_audio']           = audio_supported and 'video_audio' in data
         sl['video_player']          = data.get('video_player', 'mpv') if data.get('video_player') in ('mpv', 'vlc', 'zeroplay') else 'mpv'
+        sl['show_photo_info']      = 'show_photo_info' in data
 
         save_config(cfg)
         return redirect(url_for('slideshow') + '?saved=1')
