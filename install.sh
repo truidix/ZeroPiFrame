@@ -427,7 +427,15 @@ chown "$FRAME_USER:$FRAME_USER" "$LOG_DIR/zeropiframe-slideshow.log"
 # ---------------------------------------------------------------------------
 info "6/10 Configuring console / framebuffer"
 # ---------------------------------------------------------------------------
-systemctl disable getty@tty1 2>/dev/null || true
+# --now (not just disable) also stops an already-running getty@tty1
+# immediately - matters on a reinstall/migration (like this one) where a
+# getty may have been sitting on tty1 since an earlier boot, well before
+# this line ever ran. Without --now, "disable" alone only prevents it
+# from starting on the NEXT boot - the already-running instance (and
+# whatever it's currently printing/prompting) would keep occupying tty1
+# until a reboot, which is exactly what the chvt-based hiding below
+# would then briefly reveal around every video.
+systemctl disable --now getty@tty1 2>/dev/null || true
 
 # Reserves VT7 as a permanently empty "blank" console - slideshow.py
 # switches to it for the brief moment around every video (pygame
