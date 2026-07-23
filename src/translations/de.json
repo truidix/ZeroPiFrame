@@ -143,7 +143,7 @@
   "display_page.sync_interval_label": "Sync-Intervall (Minuten)",
   "display_page.max_cache_label": "Maximale Cache-Größe (GB)",
   "display_page.delete_removed_label": "Lokal gelöschte Bilder entfernen wenn vom Server entfernt",
-  "display_page.video_transcode_label": "Videos lokal neu kodieren, um Stocken zu reduzieren (empfohlen für den Zero 2 W)",
+  "display_page.video_transcode_label": "Videos neu kodieren, um Stocken zu reduzieren (empfohlen für den Zero 2 W)",
   "display_page.video_transcode_hint": "Standardmäßig deaktiviert. Wenn aktiviert, werden neu synchronisierte Videos direkt nach dem Download einmalig auf 720p / ca. 4,5 Mbit/s begrenzt - mit dem unten gewählten Encoder, unabhängig davon, welche Qualität Immich/Nextcloud allen anderen liefert. Betrifft nur Videos, die nach dem Aktivieren synchronisiert werden - bereits gecachte bleiben unverändert, außer der Cache wird geleert.",
   "display_page.transcode_mode_hardware": "Hardware (schnell, nutzt den eigenen Video-Encoder-Chip des Pi)",
   "display_page.transcode_mode_software": "Software (langsamer, funktioniert auf jedem Gerät)",

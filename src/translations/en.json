@@ -143,7 +143,7 @@
   "display_page.sync_interval_label": "Sync interval (minutes)",
   "display_page.max_cache_label": "Maximum cache size (GB)",
   "display_page.delete_removed_label": "Remove locally cached images once removed from the server",
-  "display_page.video_transcode_label": "Re-encode videos locally to reduce stuttering (recommended for the Zero 2 W)",
+  "display_page.video_transcode_label": "Re-encode videos to reduce stuttering (recommended for the Zero 2 W)",
   "display_page.video_transcode_hint": "Off by default. When enabled, newly synced videos are capped at 720p / ~4.5 Mbit/s once, right after download, using whichever encoder is chosen below - independent of whatever quality Immich/Nextcloud serves everyone else. Only affects videos synced after this is turned on; already-cached ones are untouched unless the cache is cleared.",
   "display_page.transcode_mode_hardware": "Hardware (fast, uses the Pi's own video encoder chip)",
   "display_page.transcode_mode_software": "Software (slower, works on any device)",
