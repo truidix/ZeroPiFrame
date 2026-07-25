@@ -416,7 +416,18 @@ fi
 # ---------------------------------------------------------------------------
 info "5/10 Setting user permissions"
 # ---------------------------------------------------------------------------
-usermod -aG video,render "$FRAME_USER" 2>/dev/null || true
+# video,render: DRM/KMS access (framebuffer, hardware decode).
+# tty: without this, $FRAME_USER can't even open /dev/tty0 or /dev/ttyN
+# (mode 0660, group "tty") to issue the chvt calls slideshow.py's
+# play_video() relies on to hide the console around video playback (see
+# CAP_SYS_TTY_CONFIG on zeropiframe-slideshow.service below for the other
+# half of that - opening the device is necessary but not sufficient,
+# VT_ACTIVATE itself is a privileged ioctl). Without both, every chvt call
+# was failing outright and getting swallowed silently (subprocess.run()
+# without check=True doesn't raise on a non-zero exit) - so the console
+# was flashing on every single video, the "before/after" VT dance in
+# play_video() was never actually doing anything on real hardware.
+usermod -aG video,render,tty "$FRAME_USER" 2>/dev/null || true
 
 chown -R "$FRAME_USER:$FRAME_USER" "$CACHE_DIR"
 # The parent of $CACHE_DIR (/var/lib/zeropiframe) is where slideshow.py
@@ -589,6 +600,15 @@ StartLimitBurst=5
 [Service]
 User=$FRAME_USER
 Group=video
+# VT_ACTIVATE/VT_WAITACTIVE (what the "chvt" calls in play_video() boil
+# down to) are privileged ioctls even once the device node itself is
+# openable (see the "tty" supplementary group added in step 5/10 above) -
+# capabilities(7) lists them under CAP_SYS_TTY_CONFIG. Granting just this
+# one capability (rather than running the whole service as root) is what
+# actually lets slideshow.py hide the console around video playback -
+# without it every chvt call was silently failing (permission denied
+# opening/activating the VT) and doing nothing at all.
+AmbientCapabilities=CAP_SYS_TTY_CONFIG
 WorkingDirectory=$INSTALL_DIR
 Environment="SDL_VIDEODRIVER=kmsdrm"
 Environment="SDL_VIDEO_KMSDRM_DEVICE=/dev/dri/card0"

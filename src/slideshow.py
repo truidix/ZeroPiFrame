@@ -816,8 +816,18 @@ def play_video(path: Path, audio: bool, player: str = 'mpv') -> pygame.Surface:
     # switching to it just shows a plain black screen instead. Failures
     # here are logged but never fatal - worst case is the console flash
     # coming back, not a broken slideshow.
+    #
+    # check=True matters: chvt needs both the "tty" supplementary group
+    # (to even open /dev/ttyN) and the CAP_SYS_TTY_CONFIG capability (for
+    # the VT_ACTIVATE ioctl itself) - see install.sh's step 5/10 and the
+    # slideshow unit's AmbientCapabilities. Without check=True here, a
+    # permission failure on either of those just exits non-zero and
+    # subprocess.run() returns normally without raising - this whole
+    # try/except would never fire, and the console-hiding would silently
+    # do nothing at all instead of logging a warning (exactly what was
+    # happening before both of those install.sh permissions existed).
     try:
-        subprocess.run(['chvt', str(BLANK_VT)], timeout=5)
+        subprocess.run(['chvt', str(BLANK_VT)], timeout=5, check=True)
     except Exception as e:
         log.warning(f'Could not switch to blank VT{BLANK_VT} before video: {e}')
 
@@ -916,8 +926,11 @@ def play_video(path: Path, audio: bool, player: str = 'mpv') -> pygame.Surface:
     # Only now switch back to the console's own VT - pygame already holds
     # the DRM master at this point, so this is cosmetic (VT state) rather
     # than something the screen's contents depend on.
+    #
+    # check=True: see the matching chvt call above - without it, a
+    # permission failure here is just as silent.
     try:
-        subprocess.run(['chvt', str(CONSOLE_VT)], timeout=5)
+        subprocess.run(['chvt', str(CONSOLE_VT)], timeout=5, check=True)
     except Exception as e:
         log.warning(f'Could not switch back to VT{CONSOLE_VT} after video: {e}')
 
