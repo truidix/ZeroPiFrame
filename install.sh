@@ -964,32 +964,48 @@ EOF
 chown root:root "$INSTALL_DIR/apply-sync-enabled.sh"
 chmod 700 "$INSTALL_DIR/apply-sync-enabled.sh"
 
-# "Check for updates" in the web UI: git-pulls the source checkout this
-# was installed from and re-runs install.sh, either in --deploy mode
-# (fast - just the .py/.html/.json files + a restart of the two services)
-# or as a full install (slow - also apt/venv/ZeroPlay/boot config; needed
-# when requirements.txt or anything install.sh itself does outside its
-# DEPLOY_MODE branch has changed). The web UI offers both as separate
-# buttons - see the "mode" argument below. Reads the checkout's location
-# from $INSTALL_DIR/.source_dir (written above / near the top of this
-# script) rather than having it baked in here, so this keeps working even
-# if the repo is later moved. The git pull itself runs as whichever user
-# owns that checkout (normally $FRAME_USER, since sudo -u as root can drop
-# to any user) rather than as root, so it doesn't leave root-owned files
-# behind in a directory a normal user needs to keep working with.
+# "Install update" in the web UI: git-pulls the source checkout this was
+# installed from and re-runs install.sh - deciding FOR ITSELF whether a
+# fast --deploy (just the .py/.html/.json files + a restart of the two
+# services) is enough, or whether a full install (apt/venv/ZeroPlay/boot
+# config - needed when requirements.txt or anything install.sh itself
+# does outside its DEPLOY_MODE branch changed) is required. That decision
+# is made by scanning the commit messages actually being pulled in for a
+# trailer line:
+#
+#   Requires-Install: full
+#
+# Any commit being pulled that has this trailer (own paragraph, exact
+# text, case-insensitive) triggers a full install; if none do, a deploy
+# is assumed sufficient. THIS IS THE ACTUAL CONVENTION - add that trailer
+# to any commit that changes install.sh's systemd units, sudoers,
+# apt/venv/pip deps, group memberships, or boot/config.txt, so a Pi
+# picking it up via the web UI's "Check for updates"/"Install update"
+# buttons (see api_check_update()/api_update() in webui.py) actually
+# gets a full install instead of a deploy that silently skips the part
+# that mattered.
+#
+# Reads the checkout's location from $INSTALL_DIR/.source_dir (written
+# above / near the top of this script) rather than having it baked in
+# here, so this keeps working even if the repo is later moved. Git
+# operations run as whichever user owns that checkout (normally
+# $FRAME_USER, since sudo -u as root can drop to any user) rather than as
+# root, so they don't leave root-owned files behind in a directory a
+# normal user needs to keep working with.
 cat > "$INSTALL_DIR/update.sh" << 'EOF'
 #!/bin/bash
-# Pulls the latest source and deploys/installs it. Runs as root (via
-# sudo, see /etc/sudoers.d/zeropiframe), triggered by the web UI's
-# "Check for updates" card (see api_update() in webui.py).
-#
-# Usage: update.sh deploy|full
+# Pulls the latest source and deploys/installs it, auto-detecting which
+# is needed. Runs as root (via sudo, see /etc/sudoers.d/zeropiframe),
+# triggered by the web UI's "Install update" button (see api_update() in
+# webui.py) - takes no arguments, the mode decision below is entirely
+# self-contained so the caller doesn't have to get it right.
 #
 # Deliberately does NOT propagate failures back to its caller via a
 # non-zero exit in the way a stricter script might: webui.py launches
-# this detached and never looks at its exit code (it can't - both modes
-# end by restarting zeropiframe-webui itself, which would otherwise race
-# the very process trying to read that exit code). $STATUS_FILE is the
+# this detached and never looks at its exit code (it can't - a full
+# install, and a deploy that actually changed anything, both end by
+# restarting zeropiframe-webui itself, which would otherwise race the
+# very process trying to read that exit code). $STATUS_FILE is the
 # actual result channel, polled by the web UI page afterwards.
 set -uo pipefail
 
@@ -997,7 +1013,6 @@ INSTALL_DIR="/opt/zeropiframe"
 STATUS_FILE="/var/lib/zeropiframe/last_update.json"
 LOG_FILE="/var/log/zeropiframe-update.log"
 SRC_FILE="$INSTALL_DIR/.source_dir"
-MODE="${1:-deploy}"
 
 mkdir -p "$(dirname "$STATUS_FILE")"
 
@@ -1009,13 +1024,7 @@ write_status() {
 }
 
 {
-    echo "=== Update ($MODE) started $(date '+%Y-%m-%d %H:%M:%S') ==="
-
-    if [[ "$MODE" != "deploy" && "$MODE" != "full" ]]; then
-        echo "Invalid mode: $MODE (expected 'deploy' or 'full')"
-        write_status false "Invalid update mode: $MODE"
-        exit 1
-    fi
+    echo "=== Update started $(date '+%Y-%m-%d %H:%M:%S') ==="
 
     if [[ ! -f "$SRC_FILE" ]]; then
         echo "No source directory recorded ($SRC_FILE) - run a full install first"
@@ -1032,6 +1041,8 @@ write_status() {
     REPO_OWNER="$(stat -c '%U' "$REPO_DIR")"
     echo "Repo: $REPO_DIR (owner: $REPO_OWNER)"
 
+    OLD_HEAD="$(sudo -u "$REPO_OWNER" git -C "$REPO_DIR" rev-parse HEAD)"
+
     PULL_OUTPUT="$(sudo -u "$REPO_OWNER" git -C "$REPO_DIR" pull --ff-only 2>&1)"
     PULL_STATUS=$?
     echo "$PULL_OUTPUT"
@@ -1039,6 +1050,30 @@ write_status() {
         write_status false "git pull failed - see $LOG_FILE"
         exit 1
     fi
+
+    NEW_HEAD="$(sudo -u "$REPO_OWNER" git -C "$REPO_DIR" rev-parse HEAD)"
+
+    if [[ "$OLD_HEAD" == "$NEW_HEAD" ]]; then
+        # Nothing new - e.g. a race with someone else updating between
+        # the web UI's "Check for updates" and clicking "Install update".
+        # No point re-running install.sh (and restarting both services)
+        # for literally nothing.
+        echo "Already up to date ($NEW_HEAD) - nothing to deploy"
+        write_status true "Already up to date"
+        exit 0
+    fi
+
+    # See the big comment above where this script is generated for the
+    # exact trailer convention - this is the authoritative check (the
+    # web UI's own preview of this, in api_check_update(), is only
+    # cosmetic).
+    if sudo -u "$REPO_OWNER" git -C "$REPO_DIR" log "$OLD_HEAD..$NEW_HEAD" --format=%B \
+         | grep -qiE '^Requires-Install:[[:space:]]*full[[:space:]]*$'; then
+        MODE="full"
+    else
+        MODE="deploy"
+    fi
+    echo "Pulled $OLD_HEAD..$NEW_HEAD - mode: $MODE"
 
     INSTALL_OK=1
     if [[ "$MODE" == "full" ]]; then
@@ -1056,14 +1091,12 @@ write_status() {
         exit 1
     fi
 
-    if [[ "$PULL_OUTPUT" == *"Already up to date"* ]]; then
-        write_status true "Already up to date ($MODE re-run anyway)"
-    elif [[ "$MODE" == "full" ]]; then
+    if [[ "$MODE" == "full" ]]; then
         write_status true "Updated and fully reinstalled"
     else
         write_status true "Updated and deployed successfully"
     fi
-    echo "=== Update ($MODE) finished $(date '+%Y-%m-%d %H:%M:%S') ==="
+    echo "=== Update finished $(date '+%Y-%m-%d %H:%M:%S') ==="
 } >> "$LOG_FILE" 2>&1
 EOF
 chown root:root "$INSTALL_DIR/update.sh"
@@ -1087,8 +1120,7 @@ $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-hdmi-schedule.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-shutdown-schedule.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-sync-interval.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-sync-enabled.sh *
-$FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/update.sh deploy
-$FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/update.sh full
+$FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/update.sh
 EOF
 chmod 440 /etc/sudoers.d/zeropiframe
 visudo -c -f /etc/sudoers.d/zeropiframe || error "sudoers file invalid - please check /etc/sudoers.d/zeropiframe"

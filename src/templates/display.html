@@ -125,6 +125,22 @@
     <button type="submit" class="btn btn-primary">{{ t('common.save_btn') }}</button>
   </div>
 </form>
+
+<div class="card mt">
+  <div class="card-label">{{ t('display_page.update_heading') }}</div>
+  <div id="update-check-block">
+    <div class="mono">{{ t('display_page.no_check_yet') }}</div>
+  </div>
+  <div class="action-row mt-sm">
+    <button type="button" class="btn btn-secondary" id="check-update-btn" onclick="checkForUpdate()">{{ t('display_page.check_update_btn') }}</button>
+    <button type="button" class="btn btn-primary" id="install-update-btn" onclick="installUpdate()" style="display:none">{{ t('display_page.install_update_btn') }}</button>
+  </div>
+  {% if last_update and last_update.timestamp %}
+  <div class="stat-sub mt-sm" id="last-update-block">{{ last_update.timestamp }} · {{ last_update.message }}</div>
+  {% else %}
+  <div class="stat-sub mt-sm" id="last-update-block"></div>
+  {% endif %}
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -132,6 +148,11 @@
 const T = {
   displayTurnedOn:      {{ t('common.display_turned_on')|tojson }},
   displayTurnedOff:     {{ t('common.display_turned_off')|tojson }},
+  checkingForUpdates:   {{ t('display_page.checking_for_updates')|tojson }},
+  upToDate:             {{ t('display_page.up_to_date')|tojson }},
+  checkFailed:          {{ t('display_page.check_update_failed')|tojson }},
+  behindMessage:        {{ t('display_page.behind_message')|tojson }},
+  installUpdateConfirm: {{ t('display_page.install_update_confirm')|tojson }},
 };
 
 const toggle = document.getElementById('schedule-toggle');
@@ -193,6 +214,95 @@ async function setDisplay(power) {
     body: JSON.stringify({power})
   });
   toast(power === 'on' ? T.displayTurnedOn : T.displayTurnedOff);
+}
+
+// Set once a "Check for updates" call finds the checkout behind, so
+// "Install update" (which itself takes no mode - update.sh decides that
+// again, authoritatively, server-side) knows roughly how long to expect
+// and can poll accordingly. Purely a UI nicety, never trusted for
+// anything that actually matters.
+let pendingUpdateMode = 'deploy';
+
+function setUpdateButtonsEnabled(enabled) {
+  document.getElementById('check-update-btn').disabled = !enabled;
+  document.getElementById('install-update-btn').disabled = !enabled;
+}
+
+async function checkForUpdate() {
+  const checkBtn = document.getElementById('check-update-btn');
+  const installBtn = document.getElementById('install-update-btn');
+  const block = document.getElementById('update-check-block');
+  checkBtn.disabled = true;
+  installBtn.style.display = 'none';
+  block.innerHTML = '<div class="mono">' + T.checkingForUpdates + '</div>';
+
+  try {
+    const r = await fetch('/api/check_update');
+    const d = await r.json();
+    if (!d.ok) {
+      block.innerHTML = '<div class="mono">' + d.message + '</div>';
+    } else if (!d.behind) {
+      block.innerHTML = '<div class="mono">' + T.upToDate + '</div>';
+    } else {
+      pendingUpdateMode = d.mode;
+      const line = T.behindMessage
+        .replace('{count}', d.commit_count)
+        .replace('{message}', d.latest_message);
+      block.innerHTML = '<div class="mono">' + line + '</div>';
+      installBtn.style.display = '';
+    }
+  } catch (e) {
+    block.innerHTML = '<div class="mono">' + T.checkFailed + '</div>';
+  }
+  checkBtn.disabled = false;
+}
+
+async function installUpdate() {
+  if (!confirm(T.installUpdateConfirm)) return;
+  setUpdateButtonsEnabled(false);
+  try {
+    const r = await fetch('/api/update', {method: 'POST'});
+    const d = await r.json();
+    toast(d.message, d.ok);
+    if (!d.ok) { setUpdateButtonsEnabled(true); return; }
+  } catch (e) {
+    // Fine either way - the update was already kicked off server-side
+    // before this fetch could fail.
+  }
+  pollUpdateStatus(pendingUpdateMode);
+}
+
+// Polls /api/update_status until it reports a definite result (ok true
+// or false, rather than the "in progress" placeholder's ok: null).
+// Errors are swallowed rather than aborting the poll - zeropiframe-webui
+// restarts itself partway through the update, so it's expected to be
+// briefly unreachable mid-poll. A full install (apt/venv/ZeroPlay build)
+// can take several minutes, much longer than a deploy - poll less often
+// and for much longer in that case (pendingUpdateMode, from the last
+// "Check for updates" call - purely cosmetic, see its own comment).
+async function pollUpdateStatus(mode) {
+  const intervalMs = mode === 'full' ? 5000 : 2000;
+  const maxTries   = mode === 'full' ? 240  : 30;   // ~20 min vs ~1 min
+  for (let i = 0; i < maxTries; i++) {
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    try {
+      const r = await fetch('/api/update_status');
+      const d = await r.json();
+      if (d.ok !== null) {
+        document.getElementById('last-update-block').textContent =
+          (d.timestamp || '') + ' · ' + d.message;
+        toast(d.message, d.ok);
+        setUpdateButtonsEnabled(true);
+        if (d.ok) {
+          document.getElementById('install-update-btn').style.display = 'none';
+          document.getElementById('update-check-block').innerHTML =
+            '<div class="mono">' + T.upToDate + '</div>';
+        }
+        return;
+      }
+    } catch (e) { /* webui likely mid-restart - keep polling */ }
+  }
+  setUpdateButtonsEnabled(true);
 }
 </script>
 {% endblock %}
