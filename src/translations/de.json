@@ -165,6 +165,7 @@
   "display_page.behind_message": "{count} Update(s) verfügbar. Neueste: {message}",
   "display_page.install_update_btn": "⬇ Update installieren",
   "display_page.install_update_confirm": "Verfügbares Update jetzt installieren? Web-UI und Slideshow starten neu (eine vollständige Installation kann mehrere Minuten dauern).",
+  "display_page.update_in_progress_label": "Installation läuft… die Web-UI trennt beim Neustart kurz die Verbindung",
   "slideshow_page.photo_info_heading": "Fotoinfos",
   "slideshow_page.photo_info_label": "Datum/Ort auf dem Bildschirm anzeigen",
   "slideshow_page.photo_info_hint": "Zeigt unten einen kleinen Balken mit Aufnahmedatum und Ort, sofern vorhanden. Funktioniert nur bei Fotos/Videos aus Immich - Immich liefert diese Angaben automatisch mit; bei Nextcloud/WebDAV wird nichts angezeigt, da diese Information dort nicht verfügbar ist.",

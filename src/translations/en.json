@@ -165,6 +165,7 @@
   "display_page.behind_message": "{count} update(s) available. Latest: {message}",
   "display_page.install_update_btn": "⬇ Install update",
   "display_page.install_update_confirm": "Install the available update now? The web UI and slideshow will restart (a full install can take several minutes).",
+  "display_page.update_in_progress_label": "Installing… the web UI will briefly disconnect while it restarts",
   "slideshow_page.photo_info_heading": "Photo info",
   "slideshow_page.photo_info_label": "Show date/location on screen",
   "slideshow_page.photo_info_hint": "Shows a small bar at the bottom with the date taken and place, when available. Only works for photos/videos synced from Immich - Immich provides this automatically; Nextcloud/WebDAV items show nothing since that information isn't available from there.",

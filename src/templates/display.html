@@ -138,6 +138,14 @@
     <button type="button" class="btn btn-secondary" id="check-update-btn" onclick="checkForUpdate()">{{ t('display_page.check_update_btn') }}</button>
     <button type="button" class="btn btn-primary" id="install-update-btn" onclick="installUpdate()" style="display:none">{{ t('display_page.install_update_btn') }}</button>
   </div>
+  <div id="update-progress-container" class="mt-sm" style="display:none">
+    <div class="progress-bar-outer">
+      <div id="update-progress-bar" class="progress-bar-inner"></div>
+    </div>
+    <div class="stat-sub mt-sm">
+      <span id="update-timer" class="mono">00:00</span> · {{ t('display_page.update_in_progress_label') }}
+    </div>
+  </div>
   {% if last_update and last_update.timestamp %}
   <div class="stat-sub mt-sm" id="last-update-block">{{ last_update.timestamp }} · {{ last_update.message }}</div>
   {% else %}
@@ -260,14 +268,74 @@ async function checkForUpdate() {
   checkBtn.disabled = false;
 }
 
+// Rough duration estimates (seconds) purely for the progress bar's fill
+// speed below - a deploy is just a file copy + two service restarts,
+// typically well under 15s; a full install (apt/venv/ZeroPlay build) is
+// much slower and far more variable depending on network/SD card speed,
+// so this is deliberately generous. Neither number is ever waited on or
+// treated as a real deadline anywhere - pollUpdateStatus's own
+// intervalMs/maxTries below are what actually bound how long polling
+// continues.
+const UPDATE_ESTIMATED_SEC = {deploy: 15, full: 180};
+
+let updateTimerHandle = null;
+let updateStartedAt = null;
+
+function formatElapsed(totalSec) {
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+// There's no way to know *actual* install progress from the outside -
+// this fills toward (but deliberately never reaches) 92% over the
+// estimated duration for the given mode, so it keeps visibly creeping
+// even if the real thing is taking longer than expected, then
+// stopUpdateProgress() snaps it to 100% once the real result is in.
+function startUpdateProgress(mode) {
+  const estimatedSec = UPDATE_ESTIMATED_SEC[mode] || UPDATE_ESTIMATED_SEC.deploy;
+  updateStartedAt = Date.now();
+  document.getElementById('update-progress-container').style.display = '';
+  document.getElementById('update-progress-bar').style.width = '0%';
+  document.getElementById('update-timer').textContent = '00:00';
+  if (updateTimerHandle) clearInterval(updateTimerHandle);
+  updateTimerHandle = setInterval(() => {
+    const elapsedSec = Math.floor((Date.now() - updateStartedAt) / 1000);
+    document.getElementById('update-timer').textContent = formatElapsed(elapsedSec);
+    const pct = Math.min(92, (elapsedSec / estimatedSec) * 100);
+    document.getElementById('update-progress-bar').style.width = pct + '%';
+  }, 1000);
+}
+
+function stopUpdateProgress(success) {
+  if (updateTimerHandle) {
+    clearInterval(updateTimerHandle);
+    updateTimerHandle = null;
+  }
+  if (success) {
+    document.getElementById('update-progress-bar').style.width = '100%';
+  }
+  // Leave the bar (at 100%, or wherever it got to on failure/timeout)
+  // and the final elapsed time visible for a moment rather than
+  // yanking it away the instant the result comes in.
+  setTimeout(() => {
+    document.getElementById('update-progress-container').style.display = 'none';
+  }, success ? 1200 : 4000);
+}
+
 async function installUpdate() {
   if (!confirm(T.installUpdateConfirm)) return;
   setUpdateButtonsEnabled(false);
+  startUpdateProgress(pendingUpdateMode);
   try {
     const r = await fetch('/api/update', {method: 'POST'});
     const d = await r.json();
     toast(d.message, d.ok);
-    if (!d.ok) { setUpdateButtonsEnabled(true); return; }
+    if (!d.ok) {
+      setUpdateButtonsEnabled(true);
+      stopUpdateProgress(false);
+      return;
+    }
   } catch (e) {
     // Fine either way - the update was already kicked off server-side
     // before this fetch could fail.
@@ -296,6 +364,7 @@ async function pollUpdateStatus(mode) {
           (d.timestamp || '') + ' · ' + d.message;
         toast(d.message, d.ok);
         setUpdateButtonsEnabled(true);
+        stopUpdateProgress(d.ok);
         if (d.ok) {
           document.getElementById('install-update-btn').style.display = 'none';
           document.getElementById('update-check-block').innerHTML =
@@ -311,6 +380,7 @@ async function pollUpdateStatus(mode) {
     } catch (e) { /* webui likely mid-restart - keep polling */ }
   }
   setUpdateButtonsEnabled(true);
+  stopUpdateProgress(false);
 }
 </script>
 {% endblock %}
