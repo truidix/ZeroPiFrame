@@ -899,18 +899,28 @@ def play_video(path: Path, audio: bool, player: str = 'mpv') -> pygame.Surface:
                 }.get(player, 'sudo apt install mpv')
         log.error(f'{cmd[0]} not found - {hint}')
 
-    # Switch back to the console's own VT before pygame reclaims the
-    # display - covers the second half of the same gap (player has
-    # exited and released DRM master, pygame hasn't grabbed it back yet).
+    # Reinitialize the pygame display *before* switching VTs back. This
+    # covers the second half of the same gap (player has exited and
+    # released DRM master, pygame hasn't grabbed it back yet) - staying on
+    # BLANK_VT (still just a plain black screen, getty masked) for the
+    # whole of pygame's own init/set_mode() means the console's verbose
+    # tty1 output never gets a window to flash on screen. Previously the
+    # chvt back to CONSOLE_VT happened first, which exposed tty1 (login
+    # prompt / shell) for however long pygame took to reinitialize -
+    # observed on-device as several seconds of visible console, not just
+    # a brief flash.
+    pygame.display.init()
+    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN | pygame.NOFRAME)
+    pygame.mouse.set_visible(False)
+
+    # Only now switch back to the console's own VT - pygame already holds
+    # the DRM master at this point, so this is cosmetic (VT state) rather
+    # than something the screen's contents depend on.
     try:
         subprocess.run(['chvt', str(CONSOLE_VT)], timeout=5)
     except Exception as e:
         log.warning(f'Could not switch back to VT{CONSOLE_VT} after video: {e}')
 
-    # Reinitialize the pygame display
-    pygame.display.init()
-    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN | pygame.NOFRAME)
-    pygame.mouse.set_visible(False)
     return screen
 
 
