@@ -1120,7 +1120,13 @@ $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-hdmi-schedule.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-shutdown-schedule.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-sync-interval.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-sync-enabled.sh *
-$FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/update.sh
+# update.sh is launched via systemd-run (not a plain sudo update.sh) so
+# it runs as its own independent unit/cgroup, immune to zeropiframe-webui
+# restarting itself partway through - see api_update()'s docstring in
+# webui.py for why a plain sudo'd child doesn't survive that. The exact
+# flags matter for sudoers matching, so they must stay in sync with the
+# subprocess.Popen() call there.
+$FRAME_USER ALL=(root) NOPASSWD: /usr/bin/systemd-run --unit=zeropiframe-update --collect --quiet $INSTALL_DIR/update.sh
 EOF
 chmod 440 /etc/sudoers.d/zeropiframe
 visudo -c -f /etc/sudoers.d/zeropiframe || error "sudoers file invalid - please check /etc/sudoers.d/zeropiframe"

@@ -656,11 +656,31 @@ def api_update():
     its comments), so there's nothing for this endpoint to get wrong by
     trusting a client-supplied mode.
 
-    Launched detached (subprocess.Popen, not .run()) and not waited on -
-    a full install, or a deploy that actually changed anything, both
-    restart zeropiframe-webui itself partway through, which would
-    otherwise tear down the very process handling this request before it
-    could send a response. This response only confirms the update
+    Launched via `systemd-run`, not a plain `sudo update.sh` - this
+    matters more than it looks. A plain sudo'd child stays in
+    zeropiframe-webui.service's own cgroup (start_new_session=True only
+    detaches the process *session*, it doesn't move cgroups). Both
+    install.sh's --deploy branch and its full-install path restart
+    zeropiframe-webui partway through - and systemd's default
+    KillMode=control-group sends SIGTERM to every process in that
+    cgroup when a service is restarted, which would include update.sh/
+    install.sh itself, self-terminating mid-script before it ever
+    reaches the *next* thing it does (restarting zeropiframe-slideshow,
+    writing the final LAST_UPDATE_PATH result). This was confirmed
+    causing exactly that failure mode in practice - a deploy or full
+    install triggered from the web UI would restart webui and then
+    silently die right there, leaving the slideshow never restarted and
+    the status file stuck on "in progress" forever. `systemd-run
+    --unit=zeropiframe-update --collect` runs update.sh as its own
+    independent transient unit/cgroup instead, immune to whatever
+    happens to zeropiframe-webui.service's cgroup. --collect makes
+    systemd garbage-collect the transient unit once it exits (success or
+    failure) so a later update doesn't collide with a leftover "failed"
+    unit of the same name. Running install.sh manually over SSH was
+    never affected by this - that lives in the SSH session's own cgroup,
+    unrelated to zeropiframe-webui.service.
+
+    Not waited on either way. This response only confirms the update
     *started*; write an "in progress" status right away so a concurrent
     page load has something better to show than the previous (possibly
     long-stale) result, then rely on update.sh itself to overwrite that
@@ -681,7 +701,8 @@ def api_update():
         log.warning(f'Could not write in-progress update status: {e}')
 
     try:
-        subprocess.Popen(['sudo', '/opt/zeropiframe/update.sh'],
+        subprocess.Popen(['sudo', 'systemd-run', '--unit=zeropiframe-update',
+                         '--collect', '--quiet', '/opt/zeropiframe/update.sh'],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
     except Exception as e:
