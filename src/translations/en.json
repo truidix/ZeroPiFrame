@@ -17,6 +17,7 @@
   "index.card_sync_current_run": "Sync – current run",
   "index.card_slideshow_current_process": "Slideshow – current process",
   "index.card_display": "Display",
+  "index.card_update": "Update",
   "index.card_shutdown": "Shutdown",
   "index.card_current_media": "Currently displayed",
   "index.no_media_yet": "Nothing shown yet",
@@ -42,6 +43,9 @@
   "index.shutdown_confirm": "Shut down the Pi now?",
   "index.shutdown_desc_1": "Turns off HDMI first, then performs an orderly shutdown. Can also be triggered externally:",
   "index.shutdown_desc_2": "(e.g. from Home Assistant before switching off a smart plug).",
+  "index.no_update_yet": "No update run yet",
+  "index.update_btn": "⬇ Check for updates",
+  "index.update_confirm": "Pull the latest version from git and deploy it now? The web UI and slideshow will restart briefly.",
   "sources.heading": "Image sources",
   "sources.nextcloud_option": "Nextcloud (WebDAV)",
   "sources.immich_option": "Immich (API)",
@@ -180,5 +184,7 @@
   "shutdown.splash_heading": "Shutting down",
   "shutdown.splash_line1": "It's now safe to disconnect power once the screen goes dark.",
   "api.shutdown_initiated": "HDMI off, shutdown initiated",
-  "api.cache_cleared": "Cache cleared"
+  "api.cache_cleared": "Cache cleared",
+  "api.update_started": "Update started - pulling latest version…",
+  "api.update_in_progress": "Update in progress…"
 }

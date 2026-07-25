@@ -102,6 +102,18 @@
 </div>
 
 <div class="card mt">
+  <div class="card-label">{{ t('index.card_update') }}</div>
+  <div id="last-update-block">
+    {% if last_update and last_update.timestamp %}
+    <div class="mono">{{ last_update.timestamp }} · {{ last_update.message }}</div>
+    {% else %}
+    <div class="mono">{{ t('index.no_update_yet') }}</div>
+    {% endif %}
+  </div>
+  <button class="btn btn-secondary mt-sm" id="update-btn" onclick="checkForUpdate()">{{ t('index.update_btn') }}</button>
+</div>
+
+<div class="card mt">
   <div class="card-label">{{ t('index.card_shutdown') }}</div>
   <p class="text-muted">
     {{ t('index.shutdown_desc_1') }} <code>POST /api/shutdown</code>
@@ -131,6 +143,7 @@ const T = {
   displayTurnedOff:     {{ t('common.display_turned_off')|tojson }},
   shutdownConfirm:      {{ t('index.shutdown_confirm')|tojson }},
   noMediaYet:           {{ t('index.no_media_yet')|tojson }},
+  updateConfirm:        {{ t('index.update_confirm')|tojson }},
 };
 
 // Remembers the last known auto-sync state so the toggle button knows what
@@ -300,6 +313,47 @@ async function shutdownNow() {
   const r = await fetch('/api/shutdown', {method: 'POST'});
   const d = await r.json();
   toast(d.message, d.ok);
+}
+
+async function checkForUpdate() {
+  if (!confirm(T.updateConfirm)) return;
+  const btn = document.getElementById('update-btn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/update', {method: 'POST'});
+    const d = await r.json();
+    toast(d.message, d.ok);
+    if (!d.ok) { btn.disabled = false; return; }
+    document.getElementById('last-update-block').innerHTML =
+      '<div class="mono">' + d.message + '</div>';
+  } catch (e) {
+    // Fine either way - the update was already kicked off server-side
+    // before this fetch could fail.
+  }
+  pollUpdateStatus();
+}
+
+// Polls /api/update_status until it reports a definite result (ok true
+// or false, rather than the "in progress" placeholder's ok: null).
+// Errors are swallowed rather than aborting the poll - zeropiframe-webui
+// restarts itself partway through the update, so it's expected to be
+// briefly unreachable mid-poll.
+async function pollUpdateStatus() {
+  for (let i = 0; i < 30; i++) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    try {
+      const r = await fetch('/api/update_status');
+      const d = await r.json();
+      if (d.ok !== null) {
+        document.getElementById('last-update-block').innerHTML =
+          '<div class="mono">' + (d.timestamp || '') + ' · ' + d.message + '</div>';
+        toast(d.message, d.ok);
+        document.getElementById('update-btn').disabled = false;
+        return;
+      }
+    } catch (e) { /* webui likely mid-restart - keep polling */ }
+  }
+  document.getElementById('update-btn').disabled = false;
 }
 </script>
 {% endblock %}

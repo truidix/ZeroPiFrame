@@ -17,6 +17,7 @@
   "index.card_sync_current_run": "Sync – Aktueller Lauf",
   "index.card_slideshow_current_process": "Slideshow – Aktueller Prozess",
   "index.card_display": "Display",
+  "index.card_update": "Update",
   "index.card_shutdown": "Herunterfahren",
   "index.card_current_media": "Aktuell angezeigt",
   "index.no_media_yet": "Noch nichts angezeigt",
@@ -42,6 +43,9 @@
   "index.shutdown_confirm": "Pi jetzt herunterfahren?",
   "index.shutdown_desc_1": "Schaltet zuerst HDMI aus, dann geordnetes Herunterfahren. Auch per externem Trigger erreichbar:",
   "index.shutdown_desc_2": "(z.B. aus Home Assistant vor dem Abschalten einer Smart-Plug-Steckdose).",
+  "index.no_update_yet": "Noch kein Update ausgeführt",
+  "index.update_btn": "⬇ Nach Updates suchen",
+  "index.update_confirm": "Neueste Version von Git holen und jetzt bereitstellen? Web-UI und Slideshow starten kurz neu.",
   "sources.heading": "Bildquellen",
   "sources.nextcloud_option": "Nextcloud (WebDAV)",
   "sources.immich_option": "Immich (API)",
@@ -180,5 +184,7 @@
   "api.slideshow_enabled": "Slideshow aktiviert",
   "api.slideshow_disabled": "Slideshow deaktiviert",
   "api.shutdown_initiated": "HDMI aus, Herunterfahren eingeleitet",
-  "api.cache_cleared": "Cache geleert"
+  "api.cache_cleared": "Cache geleert",
+  "api.update_started": "Update gestartet - neueste Version wird geholt…",
+  "api.update_in_progress": "Update läuft…"
 }
