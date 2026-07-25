@@ -466,6 +466,16 @@ systemctl mask --now getty@tty7.service autovt@tty7.service 2>/dev/null || true
 # nothing to look at instead, which isn't wanted on its own. Removes those
 # flags again (on a reinstall/update of a Pi that still has them from an
 # older install) to restore the normal, verbose console output.
+#
+# vt.global_cursor_default=0 is handled separately below (added back in,
+# not just left removed) - unlike the others, it doesn't suppress any
+# console output at all, it only stops the kernel from blinking a text
+# cursor in the corner of every VT that has nothing else drawn to it.
+# That blink was visible during play_video()'s brief blank-VT switches
+# (see slideshow.py) even after the console-hiding fix actually started
+# working - purely cosmetic, no effect on boot debuggability either way,
+# so there's no reason to leave it off along with the flags that do
+# matter for that.
 CMDLINE="$BOOT_DIR/cmdline.txt"
 if [[ -f "$CMDLINE" ]]; then
     ORIG_LINE="$(cat "$CMDLINE")"
@@ -478,10 +488,11 @@ if [[ -f "$CMDLINE" ]]; then
         NEW_LINE+="$word "
     done
     NEW_LINE="${NEW_LINE% }"
+    NEW_LINE="${NEW_LINE:+$NEW_LINE }vt.global_cursor_default=0"
     if [[ "$NEW_LINE" != "$ORIG_LINE" ]]; then
         cp "$CMDLINE" "$CMDLINE.zeropiframe-quiet.bak"
         printf '%s\n' "$NEW_LINE" > "$CMDLINE"
-        info "cmdline.txt: removed boot-quieting flags (splash feature abandoned) - reboot to see normal console output again (backup: $CMDLINE.zeropiframe-quiet.bak)"
+        info "cmdline.txt: removed boot-quieting flags but kept/added vt.global_cursor_default=0 (no blinking cursor on blank VTs) - reboot for this to take effect (backup: $CMDLINE.zeropiframe-quiet.bak)"
     fi
 fi
 
