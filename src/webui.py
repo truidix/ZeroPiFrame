@@ -180,6 +180,38 @@ def _repo_dir() -> Path | None:
     return repo_dir if (repo_dir / '.git').is_dir() else None
 
 
+def get_version() -> str | None:
+    """Version string derived from the source checkout's git history (see
+    _repo_dir()) - "r<commit count> (<short hash>)", e.g. "r87 (769c8c1)".
+    This repo doesn't use git tags, so there's no separate version to
+    bump/forget - the commit count gives an at-a-glance ordering (higher
+    = newer) and the hash is an unambiguous pointer to exactly what's
+    running (`git show <hash>` on the checkout finds it directly).
+
+    Accurate as long as updates always go through update.sh (git pull
+    immediately followed by deploying/installing that same commit,
+    which is all it ever does) rather than someone manually running
+    `git pull` in the checkout and stopping there - /opt/zeropiframe's
+    installed copy has no git history of its own to check instead, so
+    the checkout's HEAD is the only source of truth available here.
+    """
+    repo_dir = _repo_dir()
+    if repo_dir is None:
+        return None
+    try:
+        count = subprocess.run(
+            ['git', '-C', str(repo_dir), 'rev-list', '--count', 'HEAD'],
+            capture_output=True, text=True, timeout=10, check=True
+        ).stdout.strip()
+        short_hash = subprocess.run(
+            ['git', '-C', str(repo_dir), 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, timeout=10, check=True
+        ).stdout.strip()
+        return f'r{count} ({short_hash})'
+    except Exception:
+        return None
+
+
 def get_next_sync() -> str:
     r = subprocess.run(
         ['systemctl', 'show', 'zeropiframe-sync.timer', '--property=NextElapseUSecRealtime'],
@@ -396,7 +428,8 @@ def display():
 
     return render_template('display.html', cfg=cfg, hw_capable=hw_capable,
                            saved=request.args.get('saved'),
-                           last_update=get_last_update())
+                           last_update=get_last_update(),
+                           version=get_version())
 
 # ---------------------------------------------------------------------------
 # AJAX API

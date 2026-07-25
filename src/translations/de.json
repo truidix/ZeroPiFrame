@@ -156,6 +156,7 @@
   "display_page.remote_service_api_key_label": "API-Key des Remote-Dienstes",
   "display_page.remote_service_hint": "Eingerichtet über das install.sh im Ordner remote-transcode-service/ dieses Projekts, ausgeführt auf dem Zielgerät (z. B. einem Proxmox-LXC-CT) - das Skript gibt am Ende URL und API-Key aus, die hier eingetragen werden.",
   "display_page.update_heading": "Update",
+  "display_page.current_version_label": "Laufende Version",
   "display_page.no_check_yet": "Noch nicht geprüft",
   "display_page.check_update_btn": "🔍 Nach Updates suchen",
   "display_page.checking_for_updates": "Suche nach Updates…",

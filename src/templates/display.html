@@ -128,6 +128,9 @@
 
 <div class="card mt">
   <div class="card-label">{{ t('display_page.update_heading') }}</div>
+  {% if version %}
+  <div class="stat-sub">{{ t('display_page.current_version_label') }}: <span class="mono">{{ version }}</span></div>
+  {% endif %}
   <div id="update-check-block">
     <div class="mono">{{ t('display_page.no_check_yet') }}</div>
   </div>
@@ -297,6 +300,11 @@ async function pollUpdateStatus(mode) {
           document.getElementById('install-update-btn').style.display = 'none';
           document.getElementById('update-check-block').innerHTML =
             '<div class="mono">' + T.upToDate + '</div>';
+          // Reload so "Running version" (rendered server-side at page
+          // load) picks up the newly installed commit - it has no other
+          // way to update itself without a full page load. Delayed so
+          // the toast above is actually visible for a moment first.
+          setTimeout(() => location.reload(), 1500);
         }
         return;
       }
