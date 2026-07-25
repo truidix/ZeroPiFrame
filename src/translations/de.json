@@ -44,8 +44,10 @@
   "index.shutdown_desc_1": "Schaltet zuerst HDMI aus, dann geordnetes Herunterfahren. Auch per externem Trigger erreichbar:",
   "index.shutdown_desc_2": "(z.B. aus Home Assistant vor dem Abschalten einer Smart-Plug-Steckdose).",
   "index.no_update_yet": "Noch kein Update ausgeführt",
-  "index.update_btn": "⬇ Nach Updates suchen",
-  "index.update_confirm": "Neueste Version von Git holen und jetzt bereitstellen? Web-UI und Slideshow starten kurz neu.",
+  "index.update_deploy_btn": "⬇ Neueste Version bereitstellen (schnell)",
+  "index.update_full_btn": "⬇ Vollständige Installation (langsam)",
+  "index.update_deploy_confirm": "Neueste Version von Git holen und den Code bereitstellen (keine apt/venv-Änderungen)? Web-UI und Slideshow starten kurz neu.",
+  "index.update_full_confirm": "Neueste Version von Git holen und eine vollständige Installation ausführen (apt-Pakete, Python-venv, ZeroPlay, Boot-Konfiguration)? Das kann mehrere Minuten dauern, Web-UI und Slideshow starten neu.",
   "sources.heading": "Bildquellen",
   "sources.nextcloud_option": "Nextcloud (WebDAV)",
   "sources.immich_option": "Immich (API)",
@@ -186,5 +188,7 @@
   "api.shutdown_initiated": "HDMI aus, Herunterfahren eingeleitet",
   "api.cache_cleared": "Cache geleert",
   "api.update_started": "Update gestartet - neueste Version wird geholt…",
-  "api.update_in_progress": "Update läuft…"
+  "api.update_in_progress": "Update läuft…",
+  "api.update_full_started": "Vollständige Installation gestartet - neueste Version wird geholt…",
+  "api.update_full_in_progress": "Vollständige Installation läuft - das kann mehrere Minuten dauern…"
 }

@@ -945,33 +945,39 @@ chown root:root "$INSTALL_DIR/apply-sync-enabled.sh"
 chmod 700 "$INSTALL_DIR/apply-sync-enabled.sh"
 
 # "Check for updates" in the web UI: git-pulls the source checkout this
-# was installed from and re-runs install.sh in --deploy mode (copy files +
-# restart the two services - see that block near the top of this script).
-# Reads the checkout's location from $INSTALL_DIR/.source_dir (written
-# above / near the top of this script) rather than having it baked in here,
-# so this keeps working even if the repo is later moved. The git pull
-# itself runs as whichever user owns that checkout (normally $FRAME_USER,
-# since sudo -u as root can drop to any user) rather than as root, so it
-# doesn't leave root-owned files behind in a directory a normal user needs
-# to keep working with.
+# was installed from and re-runs install.sh, either in --deploy mode
+# (fast - just the .py/.html/.json files + a restart of the two services)
+# or as a full install (slow - also apt/venv/ZeroPlay/boot config; needed
+# when requirements.txt or anything install.sh itself does outside its
+# DEPLOY_MODE branch has changed). The web UI offers both as separate
+# buttons - see the "mode" argument below. Reads the checkout's location
+# from $INSTALL_DIR/.source_dir (written above / near the top of this
+# script) rather than having it baked in here, so this keeps working even
+# if the repo is later moved. The git pull itself runs as whichever user
+# owns that checkout (normally $FRAME_USER, since sudo -u as root can drop
+# to any user) rather than as root, so it doesn't leave root-owned files
+# behind in a directory a normal user needs to keep working with.
 cat > "$INSTALL_DIR/update.sh" << 'EOF'
 #!/bin/bash
-# Pulls the latest source and deploys it. Runs as root (via sudo, see
-# /etc/sudoers.d/zeropiframe), triggered by the web UI's "Check for
-# updates" button (see api_update() in webui.py).
+# Pulls the latest source and deploys/installs it. Runs as root (via
+# sudo, see /etc/sudoers.d/zeropiframe), triggered by the web UI's
+# "Check for updates" card (see api_update() in webui.py).
+#
+# Usage: update.sh deploy|full
 #
 # Deliberately does NOT propagate failures back to its caller via a
 # non-zero exit in the way a stricter script might: webui.py launches
-# this detached and never looks at its exit code (it can't - the deploy
-# step below restarts zeropiframe-webui itself, which would otherwise
-# race the very process trying to read that exit code). $STATUS_FILE is
-# the actual result channel, polled by the web UI page afterwards.
+# this detached and never looks at its exit code (it can't - both modes
+# end by restarting zeropiframe-webui itself, which would otherwise race
+# the very process trying to read that exit code). $STATUS_FILE is the
+# actual result channel, polled by the web UI page afterwards.
 set -uo pipefail
 
 INSTALL_DIR="/opt/zeropiframe"
 STATUS_FILE="/var/lib/zeropiframe/last_update.json"
 LOG_FILE="/var/log/zeropiframe-update.log"
 SRC_FILE="$INSTALL_DIR/.source_dir"
+MODE="${1:-deploy}"
 
 mkdir -p "$(dirname "$STATUS_FILE")"
 
@@ -983,7 +989,13 @@ write_status() {
 }
 
 {
-    echo "=== Update started $(date '+%Y-%m-%d %H:%M:%S') ==="
+    echo "=== Update ($MODE) started $(date '+%Y-%m-%d %H:%M:%S') ==="
+
+    if [[ "$MODE" != "deploy" && "$MODE" != "full" ]]; then
+        echo "Invalid mode: $MODE (expected 'deploy' or 'full')"
+        write_status false "Invalid update mode: $MODE"
+        exit 1
+    fi
 
     if [[ ! -f "$SRC_FILE" ]]; then
         echo "No source directory recorded ($SRC_FILE) - run a full install first"
@@ -1008,17 +1020,30 @@ write_status() {
         exit 1
     fi
 
-    if ! bash "$REPO_DIR/install.sh" --deploy "$REPO_OWNER"; then
-        write_status false "Deploy failed - see $LOG_FILE"
+    INSTALL_OK=1
+    if [[ "$MODE" == "full" ]]; then
+        bash "$REPO_DIR/install.sh" "$REPO_OWNER" || INSTALL_OK=0
+    else
+        bash "$REPO_DIR/install.sh" --deploy "$REPO_OWNER" || INSTALL_OK=0
+    fi
+
+    if [[ "$INSTALL_OK" -eq 0 ]]; then
+        if [[ "$MODE" == "full" ]]; then
+            write_status false "Full install failed - see $LOG_FILE"
+        else
+            write_status false "Deploy failed - see $LOG_FILE"
+        fi
         exit 1
     fi
 
     if [[ "$PULL_OUTPUT" == *"Already up to date"* ]]; then
-        write_status true "Already up to date (re-deployed anyway)"
+        write_status true "Already up to date ($MODE re-run anyway)"
+    elif [[ "$MODE" == "full" ]]; then
+        write_status true "Updated and fully reinstalled"
     else
         write_status true "Updated and deployed successfully"
     fi
-    echo "=== Update finished $(date '+%Y-%m-%d %H:%M:%S') ==="
+    echo "=== Update ($MODE) finished $(date '+%Y-%m-%d %H:%M:%S') ==="
 } >> "$LOG_FILE" 2>&1
 EOF
 chown root:root "$INSTALL_DIR/update.sh"
@@ -1042,7 +1067,8 @@ $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-hdmi-schedule.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-shutdown-schedule.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-sync-interval.sh *
 $FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/apply-sync-enabled.sh *
-$FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/update.sh
+$FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/update.sh deploy
+$FRAME_USER ALL=(root) NOPASSWD: $INSTALL_DIR/update.sh full
 EOF
 chmod 440 /etc/sudoers.d/zeropiframe
 visudo -c -f /etc/sudoers.d/zeropiframe || error "sudoers file invalid - please check /etc/sudoers.d/zeropiframe"

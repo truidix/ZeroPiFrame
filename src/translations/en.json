@@ -44,8 +44,10 @@
   "index.shutdown_desc_1": "Turns off HDMI first, then performs an orderly shutdown. Can also be triggered externally:",
   "index.shutdown_desc_2": "(e.g. from Home Assistant before switching off a smart plug).",
   "index.no_update_yet": "No update run yet",
-  "index.update_btn": "⬇ Check for updates",
-  "index.update_confirm": "Pull the latest version from git and deploy it now? The web UI and slideshow will restart briefly.",
+  "index.update_deploy_btn": "⬇ Deploy latest (fast)",
+  "index.update_full_btn": "⬇ Full install (slow)",
+  "index.update_deploy_confirm": "Pull the latest version from git and deploy the code (no apt/venv changes)? The web UI and slideshow will restart briefly.",
+  "index.update_full_confirm": "Pull the latest version from git and run a full install (apt packages, Python venv, ZeroPlay, boot config)? This can take several minutes and the web UI and slideshow will restart.",
   "sources.heading": "Image sources",
   "sources.nextcloud_option": "Nextcloud (WebDAV)",
   "sources.immich_option": "Immich (API)",
@@ -186,5 +188,7 @@
   "api.shutdown_initiated": "HDMI off, shutdown initiated",
   "api.cache_cleared": "Cache cleared",
   "api.update_started": "Update started - pulling latest version…",
-  "api.update_in_progress": "Update in progress…"
+  "api.update_in_progress": "Update in progress…",
+  "api.update_full_started": "Full install started - pulling latest version…",
+  "api.update_full_in_progress": "Full install in progress - this can take several minutes…"
 }
